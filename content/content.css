@@ -1,0 +1,32 @@
+/* YTMusic Counter - On-page Badge Styling */
+#ytmusic-counter-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 4px 10px;
+  margin-right: 12px;
+  color: #f1f1f1;
+  font-family: 'Roboto', 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: default;
+  user-select: none;
+  transition: all 0.2s ease-in-out;
+}
+
+#ytmusic-counter-badge:hover {
+  background: rgba(255, 0, 51, 0.2);
+  border-color: rgba(255, 0, 51, 0.4);
+}
+
+#ytmusic-counter-badge .ytmc-icon {
+  font-size: 14px;
+}
+
+#ytmusic-counter-badge .ytmc-count {
+  font-weight: 700;
+  color: #ff334b;
+}

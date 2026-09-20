@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YTMusic Counter</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <div class="brand-logo">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+            <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
+            <polygon points="10,8 16,12 10,16" fill="currentColor"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>YTMusic Counter</h1>
+          <span class="version">v1.0.0</span>
+        </div>
+      </div>
+      <div class="status-indicator online" id="statusIndicator" title="Service Ready">
+        <span class="status-dot"></span>
+      </div>
+    </header>
+
+    <!-- Main Counter Card -->
+    <section class="stat-hero">
+      <div class="counter-label">Tracks Counted</div>
+      <div class="counter-value" id="totalPlays">0</div>
+      <div class="counter-subtext">total tracks played</div>
+    </section>
+
+    <!-- Now Playing Card -->
+    <section class="card now-playing" id="nowPlayingCard">
+      <div class="card-header">
+        <span class="card-title">Now Playing</span>
+        <span class="live-pill" id="livePill">Idle</span>
+      </div>
+      <div class="track-details">
+        <div class="track-title" id="currentTrackTitle">No track playing</div>
+        <div class="track-artist" id="currentTrackArtist">Open music.youtube.com</div>
+      </div>
+    </section>
+
+    <!-- Recent Tracks History -->
+    <section class="card history-section">
+      <div class="card-header">
+        <span class="card-title">Recent Tracks</span>
+        <button id="clearHistoryBtn" class="btn-text">Reset</button>
+      </div>
+      <ul class="history-list" id="historyList">
+        <li class="empty-state">No songs counted yet. Start listening on YouTube Music!</li>
+      </ul>
+    </section>
+
+    <!-- Footer Actions -->
+    <footer class="footer">
+      <button id="openYtMusicBtn" class="btn-primary">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+          <polygon points="5,3 19,12 5,21"/>
+        </svg>
+        Open YouTube Music
+      </button>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
