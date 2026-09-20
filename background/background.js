@@ -1,26 +1,36 @@
 /**
  * YTMusic Counter - Background Script
- * Listens for events from content scripts and manages persistent storage.
+ * Manages aggregated counters for songs, artists, and full album listens.
+ * Data is stored in compact key-value dictionaries for maximum performance and minimal footprint.
  */
 
-// Cross-browser compatibility alias
 const extBrowser = typeof browser !== 'undefined' ? browser : chrome;
 
-const DEFAULT_STATE = {
-  totalPlays: 0,
-  currentTrack: null,
-  history: [],
-  sessionStartTime: Date.now()
-};
+// Helper to create consistent dictionary keys
+function makeSongKey(title, artist) {
+  return `${(title || '').trim().toLowerCase()}:::${(artist || '').trim().toLowerCase()}`;
+}
 
-// Initialize extension storage with default values on installation or startup
+function makeArtistKey(artist) {
+  return (artist || '').trim().toLowerCase();
+}
+
+function makeAlbumKey(album, artist) {
+  return `${(album || '').trim().toLowerCase()}:::${(artist || '').trim().toLowerCase()}`;
+}
+
+// Initialize default storage schema
 async function initializeStorage() {
   try {
-    const data = await extBrowser.storage.local.get(['totalPlays', 'history', 'sessionStartTime']);
+    const data = await extBrowser.storage.local.get(['totalPlays', 'songs', 'artists', 'albums']);
     const updates = {};
     if (typeof data.totalPlays === 'undefined') updates.totalPlays = 0;
-    if (!Array.isArray(data.history)) updates.history = [];
-    if (!data.sessionStartTime) updates.sessionStartTime = Date.now();
+    if (!data.songs || typeof data.songs !== 'object') updates.songs = {};
+    if (!data.artists || typeof data.artists !== 'object') updates.artists = {};
+    if (!data.albums || typeof data.albums !== 'object') updates.albums = {};
+
+    // Remove legacy 'history' if present from previous versions
+    await extBrowser.storage.local.remove('history');
 
     if (Object.keys(updates).length > 0) {
       await extBrowser.storage.local.set(updates);
@@ -32,16 +42,30 @@ async function initializeStorage() {
 
 initializeStorage();
 
-// Handle messages from content script and popup
+// Message listener
 extBrowser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) return;
 
   switch (message.type) {
+    case 'GET_SONG_COUNT': {
+      getSongCount(message.payload)
+        .then(result => sendResponse({ status: 'ok', data: result }))
+        .catch(err => sendResponse({ status: 'error', error: err.message }));
+      return true;
+    }
+
     case 'TRACK_PLAYED': {
       handleTrackPlayed(message.payload)
-        .then(updatedStats => sendResponse({ status: 'ok', data: updatedStats }))
+        .then(result => sendResponse({ status: 'ok', data: result }))
         .catch(err => sendResponse({ status: 'error', error: err.message }));
-      return true; // Keep message channel open for async response
+      return true;
+    }
+
+    case 'ALBUM_COMPLETED': {
+      handleAlbumCompleted(message.payload)
+        .then(result => sendResponse({ status: 'ok', data: result }))
+        .catch(err => sendResponse({ status: 'error', error: err.message }));
+      return true;
     }
 
     case 'GET_STATS': {
@@ -64,48 +88,150 @@ extBrowser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-async function handleTrackPlayed(track) {
-  const current = await extBrowser.storage.local.get(['totalPlays', 'history']);
-  const totalPlays = (current.totalPlays || 0) + 1;
-  const history = current.history || [];
+/**
+ * Returns the current play count for a specific song
+ */
+async function getSongCount(payload) {
+  if (!payload || !payload.title) return { songPlays: 0 };
+  const songKey = makeSongKey(payload.title, payload.artist);
+  const data = await extBrowser.storage.local.get(['songs']);
+  const songs = data.songs || {};
+  const songPlays = (songs[songKey] && songs[songKey].playCount) || 0;
+  return { songPlays };
+}
 
-  const entry = {
-    id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    title: track.title || 'Unknown Title',
+/**
+ * Records a track play and updates song, artist, and total counters
+ */
+async function handleTrackPlayed(track) {
+  if (!track || !track.title) return { totalPlays: 0, songPlays: 0 };
+
+  const data = await extBrowser.storage.local.get(['totalPlays', 'songs', 'artists']);
+  const totalPlays = (data.totalPlays || 0) + 1;
+  const songs = data.songs || {};
+  const artists = data.artists || {};
+
+  const songKey = makeSongKey(track.title, track.artist);
+  const artistKey = makeArtistKey(track.artist);
+
+  // Update Song count
+  if (!songs[songKey]) {
+    songs[songKey] = {
+      title: track.title,
+      artist: track.artist || 'Unknown Artist',
+      album: track.album || '',
+      playCount: 1
+    };
+  } else {
+    songs[songKey].playCount = (songs[songKey].playCount || 0) + 1;
+    if (track.album && !songs[songKey].album) songs[songKey].album = track.album;
+  }
+
+  // Update Artist count (handles multiple artists separated by comma or feat)
+  if (track.artist) {
+    const artistList = track.artist.split(/[,&/]| feat\.? | ft\.? /i).map(a => a.trim()).filter(Boolean);
+    artistList.forEach(rawName => {
+      const aKey = makeArtistKey(rawName);
+      if (!artists[aKey]) {
+        artists[aKey] = { artist: rawName, playCount: 1 };
+      } else {
+        artists[aKey].playCount = (artists[aKey].playCount || 0) + 1;
+      }
+    });
+  }
+
+  const currentTrack = {
+    title: track.title,
     artist: track.artist || 'Unknown Artist',
     album: track.album || '',
-    timestamp: Date.now()
+    songPlays: songs[songKey].playCount
   };
-
-  // Keep latest 100 tracks in history
-  const updatedHistory = [entry, ...history].slice(0, 100);
 
   await extBrowser.storage.local.set({
     totalPlays,
-    history: updatedHistory,
-    currentTrack: entry
+    songs,
+    artists,
+    currentTrack
   });
 
-  return { totalPlays, currentTrack: entry };
+  return {
+    totalPlays,
+    songPlays: songs[songKey].playCount,
+    currentTrack
+  };
 }
 
+/**
+ * Records when an album has been listened from start to finish
+ */
+async function handleAlbumCompleted(payload) {
+  if (!payload || !payload.album) return { completePlays: 0 };
+
+  const data = await extBrowser.storage.local.get(['albums']);
+  const albums = data.albums || {};
+  const albumKey = makeAlbumKey(payload.album, payload.artist);
+
+  if (!albums[albumKey]) {
+    albums[albumKey] = {
+      album: payload.album,
+      artist: payload.artist || 'Unknown Artist',
+      completePlays: 1
+    };
+  } else {
+    albums[albumKey].completePlays = (albums[albumKey].completePlays || 0) + 1;
+  }
+
+  await extBrowser.storage.local.set({ albums });
+  console.log('[YTMusic Counter] Album completed:', payload.album, 'Total completions:', albums[albumKey].completePlays);
+  return { completePlays: albums[albumKey].completePlays };
+}
+
+/**
+ * Compiles aggregated statistics for popup display
+ */
 async function getStats() {
-  const data = await extBrowser.storage.local.get(['totalPlays', 'history', 'currentTrack', 'sessionStartTime']);
+  const data = await extBrowser.storage.local.get(['totalPlays', 'songs', 'artists', 'albums', 'currentTrack']);
+  const songs = data.songs || {};
+  const artists = data.artists || {};
+  const albums = data.albums || {};
+
+  // Sort top 20 items for each category
+  const topSongs = Object.values(songs)
+    .sort((a, b) => b.playCount - a.playCount)
+    .slice(0, 20);
+
+  const topArtists = Object.values(artists)
+    .sort((a, b) => b.playCount - a.playCount)
+    .slice(0, 20);
+
+  const topAlbums = Object.values(albums)
+    .sort((a, b) => b.completePlays - a.completePlays)
+    .slice(0, 20);
+
   return {
     totalPlays: data.totalPlays || 0,
     currentTrack: data.currentTrack || null,
-    recentHistory: (data.history || []).slice(0, 10),
-    sessionStartTime: data.sessionStartTime || Date.now()
+    uniqueSongsCount: Object.keys(songs).length,
+    uniqueArtistsCount: Object.keys(artists).length,
+    completedAlbumsCount: Object.values(albums).reduce((sum, a) => sum + (a.completePlays || 0), 0),
+    topSongs,
+    topArtists,
+    topAlbums
   };
 }
 
+/**
+ * Resets all statistics
+ */
 async function resetStats() {
-  const newState = {
+  const emptyState = {
     totalPlays: 0,
-    history: [],
-    currentTrack: null,
-    sessionStartTime: Date.now()
+    songs: {},
+    artists: {},
+    albums: {},
+    currentTrack: null
   };
-  await extBrowser.storage.local.set(newState);
-  return newState;
+  await extBrowser.storage.local.clear();
+  await extBrowser.storage.local.set(emptyState);
+  return emptyState;
 }

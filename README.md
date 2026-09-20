@@ -1,6 +1,18 @@
 # YTMusic Counter - Firefox Extension
 
-A lightweight, privacy-friendly Firefox WebExtension (Manifest V3) that counts and tracks played tracks and listening sessions on [YouTube Music](https://music.youtube.com).
+A lightweight, privacy-friendly Firefox WebExtension (Manifest V3) that tracks and counts your music listening stats on [YouTube Music](https://music.youtube.com).
+
+---
+
+## 🎯 Key Features
+
+1. **Per-Song Player Badge**: Directly on YouTube Music's player bar, you see how many times you have listened to the currently playing song (e.g. `🎵 5 plays`).
+2. **Aggregated Grouped Counters**:
+   - **Songs**: Lifetime play count per unique track.
+   - **Artists**: Lifetime plays aggregated across all songs by that artist (including collaborations).
+   - **Albums**: Counts how many times you have listened to a full album **from start to finish** without skipping.
+3. **Optimized Storage**: Uses compact $O(1)$ dictionary key-value maps. Zero bloat, no unbounded chronological histories, and negligible memory footprint (< 400 KB even after years of continuous listening).
+4. **No Build Step Required**: Pure WebExtensions (Manifest V3) JavaScript, CSS, and HTML.
 
 ---
 
@@ -10,16 +22,16 @@ A lightweight, privacy-friendly Firefox WebExtension (Manifest V3) that counts a
 ytmusic-counter/
 ├── manifest.json              # WebExtension Manifest V3 metadata & permissions
 ├── background/
-│   └── background.js          # Background service managing counts & persistent storage
+│   └── background.js          # Background service managing grouped counters in storage
 ├── content/
-│   ├── content.js             # Injected script detecting playback on music.youtube.com
-│   └── content.css            # Styling for the subtle on-page counter badge
+│   ├── content.js             # Injected script detecting playback, albums & song badge
+│   └── content.css            # Styling for the per-song badge on YouTube Music's player
 ├── popup/
-│   ├── popup.html             # Sleek dark-mode extension popup
-│   ├── popup.css              # Popup styling (YouTube Music dark aesthetic)
-│   └── popup.js               # Popup interactivity & real-time counter updates
+│   ├── popup.html             # Extension popup with tabs for Songs, Artists, and Albums
+│   ├── popup.css              # Dark theme styling (YouTube Music aesthetic)
+│   └── popup.js               # Tab logic, real-time counters & storage sync
 ├── icons/
-│   └── icon.svg               # Extension icon (SVG, supported natively by Firefox)
+│   └── icon.svg               # Extension vector icon
 └── README.md                  # Documentation & setup guide
 ```
 
@@ -27,46 +39,29 @@ ytmusic-counter/
 
 ## 🚀 How to Install and Test in Firefox
 
-Because this extension uses pure Vanilla WebExtensions standards, no build step or package manager is required. You can load it directly into Firefox:
-
 ### 1. Open Firefox Debugging Page
-1. Open Firefox and enter the following URL in the address bar:
-   ```text
-   about:debugging#/runtime/this-firefox
-   ```
-2. Press **Enter**.
+In Firefox, enter the following URL in the address bar:
+```text
+about:debugging#/runtime/this-firefox
+```
 
 ### 2. Load the Extension
-1. Under **Temporary Extensions**, click the button:
-   > **"Load Temporary Add-on..."**
-2. Browse to this project folder:
+1. Under **Temporary Extensions**, click **"Load Temporary Add-on..."**.
+2. Browse to the extension folder:
    ```text
    path/to/ytmusic-counter
    ```
 3. Select `manifest.json` and click **Open**.
 
-The extension **YTMusic Counter** will now appear in your Firefox toolbar!
-
 ---
 
-## 🎧 How to Test
+## 🎧 Testing the Features
 
-1. Navigate to **[https://music.youtube.com](https://music.youtube.com)**.
-2. Start playing any song or playlist.
-3. Observe:
-   - The subtle counter badge will appear on YouTube Music's player bar showing your total plays count.
-   - Click the **YTMusic Counter** icon in your Firefox toolbar to view:
-     - Total tracks counted.
-     - Live "Now Playing" track title and artist.
-     - History of recent songs.
-     - Reset button to clear statistics at any time.
-
----
-
-## ⚙️ Key Technical Features
-
-- **Manifest V3 Compliant**: Built to modern WebExtensions MV3 standards with Firefox Gecko compatibility.
-- **Zero Build Dependencies**: Pure JavaScript, HTML5, and CSS3 without requiring Node.js or bundlers.
-- **Debounced Playback Detection**: Songs are counted after playing for at least 5 seconds to prevent accidental counts during rapid track skipping.
-- **Storage Persistence**: Uses `browser.storage.local` to safely persist song counts and history across browser sessions.
-- **Dark Mode UI**: Designed to match the look and feel of YouTube Music with glowing red accents and clean metrics.
+1. Open **[https://music.youtube.com](https://music.youtube.com)**.
+2. Play any song:
+   - Notice the player badge next to the volume controls immediately shows: `🎵 0 plays` (or previous count).
+   - After listening for at least 5 seconds, the count increments by 1 with a subtle pulse animation.
+3. Click the **YTMusic Counter** icon in your Firefox toolbar:
+   - View your **Total Plays**, **Unique Songs**, **Unique Artists**, and **Full Albums** completed.
+   - Switch between the **Top Songs**, **Artists**, and **Full Albums** tabs.
+   - Check the **Now Playing** card displaying the active song's play count.
