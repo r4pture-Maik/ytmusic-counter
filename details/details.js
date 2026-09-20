@@ -57,6 +57,8 @@ const elements = {
   forceRescanCheckbox: document.getElementById('forceRescanCheckbox'),
 
   // Diagnostics & Debug Elements
+  toggleDebugOptions: document.getElementById('toggleDebugOptions'),
+  debugSection: document.getElementById('debugSection'),
   debugPingBtn: document.getElementById('debugPingBtn'),
   debugCheckStorageBtn: document.getElementById('debugCheckStorageBtn'),
   debugResetSyncBtn: document.getElementById('debugResetSyncBtn'),
@@ -209,7 +211,7 @@ function renderStats(stats) {
 function renderAlbumsBreakdown(albums) {
   if (!elements.albumsBreakdownList) return;
   if (!albums || albums.length === 0) {
-    elements.albumsBreakdownList.innerHTML = '<div class="empty-state-card">No albums tracked yet. Scan your listening history to view albums.</div>';
+    elements.albumsBreakdownList.innerHTML = '<div class="empty-state-card">No albums tracked yet. Sync your listening history or play an album to get started.</div>';
     return;
   }
 
@@ -226,7 +228,7 @@ function renderAlbumsBreakdown(albums) {
     } else if (album.completePlays > 0) {
       statusText = `★ Full Album (${album.completePlays}x)`;
     } else {
-      statusText = `${uniqueTracks} ${uniqueTracks === 1 ? 'song' : 'songs'} listened`;
+      statusText = `${uniqueTracks} ${uniqueTracks === 1 ? 'song' : 'songs'} played`;
     }
 
     const cardId = `album-card-${idx}`;
@@ -244,13 +246,13 @@ function renderAlbumsBreakdown(albums) {
         <div class="album-card-right">
           <span class="album-status-pill ${isCompleted ? 'completed' : ''}">${statusText}</span>
           <button type="button" class="btn-toggle-album-tracks" data-index="${idx}">
-            Compare Tracks
+            View Tracks
           </button>
         </div>
       </div>
       <div class="album-card-expanded" id="${cardId}">
         <div style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 600; margin-bottom: 6px;">
-          Tracks you listened to (${uniqueTracks}):
+          Songs played (${uniqueTracks}):
         </div>
         <div class="tracks-list-grid" id="${cardId}-tracks">
         </div>
@@ -270,7 +272,7 @@ function renderAlbumsBreakdown(albums) {
     } else {
       const chip = document.createElement('span');
       chip.className = 'track-chip listened';
-      chip.textContent = 'Album tracks tracked';
+      chip.textContent = 'Songs tracked';
       tracksContainer.appendChild(chip);
     }
 
@@ -279,10 +281,10 @@ function renderAlbumsBreakdown(albums) {
     const expandedSection = card.querySelector(`#${cardId}`);
     toggleBtn.addEventListener('click', async () => {
       const isActive = expandedSection.classList.toggle('active');
-      toggleBtn.textContent = isActive ? 'Hide Tracks' : 'Compare Tracks';
+      toggleBtn.textContent = isActive ? 'Hide Tracks' : 'View Tracks';
 
       if (isActive && album.albumBrowseId && !album.totalTracks) {
-        toggleBtn.textContent = 'Fetching tracklist...';
+        toggleBtn.textContent = 'Loading tracklist...';
         extBrowser.runtime.sendMessage({
           type: 'GET_ALBUM_DETAILS',
           payload: { album: album.album, artist: album.artist }
@@ -461,20 +463,20 @@ function renderScanProgress(scanProgress) {
     elements.scannerLivePanel.style.display = 'flex';
     if (elements.scannerConfigSpinner) elements.scannerConfigSpinner.classList.remove('done');
     if (elements.scannerLiveBadge) {
-      elements.scannerLiveBadge.textContent = 'Scanning & Importing...';
+      elements.scannerLiveBadge.textContent = 'Syncing History...';
       elements.scannerLiveBadge.classList.remove('badge-done');
     }
     if (elements.scannerLiveCounts) {
       const plays = scanProgress.count || 0;
       const unique = scanProgress.unique || 0;
-      elements.scannerLiveCounts.textContent = `${plays} ${plays === 1 ? 'play' : 'plays'} (${unique} unique)`;
+      elements.scannerLiveCounts.textContent = `${plays} ${plays === 1 ? 'play' : 'plays'} (${unique} songs)`;
     }
     if (elements.scannerImportingTrack) {
       if (scanProgress.latestTrack && scanProgress.latestTrack.title) {
         const t = scanProgress.latestTrack;
         elements.scannerImportingTrack.textContent = `🎵 "${t.title}" • ${t.artist || 'Unknown'}${t.album ? ` (${t.album})` : ''}`;
       } else {
-        elements.scannerImportingTrack.textContent = scanProgress.statusText || 'Auto-scrolling history entries...';
+        elements.scannerImportingTrack.textContent = scanProgress.statusText || 'Finding songs in history...';
       }
     }
   } else if (scanProgress.statusText && scanProgress.count > 0) {
@@ -485,7 +487,7 @@ function renderScanProgress(scanProgress) {
       elements.scannerLiveBadge.classList.add('badge-done');
     }
     if (elements.scannerLiveCounts) {
-      elements.scannerLiveCounts.textContent = `${scanProgress.count} plays imported`;
+      elements.scannerLiveCounts.textContent = `${scanProgress.count} plays synced`;
     }
     if (elements.scannerImportingTrack) {
       elements.scannerImportingTrack.textContent = scanProgress.statusText;
@@ -510,11 +512,11 @@ function renderHistorySyncStatus(syncState) {
   if (!elements.historySyncText) return;
 
   if (!syncState || !syncState.lastDateHeader) {
-    elements.historySyncText.textContent = 'Sync Status: Baseline scan needed (Full scan mode)';
+    elements.historySyncText.textContent = 'Sync Status: Ready for first sync';
     if (elements.historySyncDot) elements.historySyncDot.classList.remove('active');
     if (elements.debugSyncBoundaryStatus) elements.debugSyncBoundaryStatus.textContent = 'Boundary: None';
   } else {
-    elements.historySyncText.textContent = `Sync Status: Incremental active (Boundary: "${syncState.lastDateHeader}", ${syncState.syncedCountOnDate} plays)`;
+    elements.historySyncText.textContent = `Sync Status: Last synced up to ${syncState.lastDateHeader} (${syncState.syncedCountOnDate} songs)`;
     if (elements.historySyncDot) elements.historySyncDot.classList.add('active');
     if (elements.debugSyncBoundaryStatus) {
       elements.debugSyncBoundaryStatus.textContent = `Boundary: "${syncState.lastDateHeader}" (${syncState.syncedCountOnDate} plays)`;
@@ -561,7 +563,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 /* ==========================================================================
-   DEBUGGING & DIAGNOSTICS MODULE (Easily Reversible)
+   DEBUGGING & DIAGNOSTICS MODULE (Hidden Behind Debug Options Toggle)
    ========================================================================== */
 function debugLog(tag, message, data) {
   const now = new Date().toTimeString().split(' ')[0];
@@ -576,6 +578,22 @@ function debugLog(tag, message, data) {
 }
 
 function setupDebugSection() {
+  // Wire up Debug Options Toggle Switch
+  if (elements.toggleDebugOptions && elements.debugSection) {
+    const isDebugActive = localStorage.getItem('ytmc_show_debug') === 'true';
+    elements.toggleDebugOptions.checked = isDebugActive;
+    elements.debugSection.style.display = isDebugActive ? 'block' : 'none';
+
+    elements.toggleDebugOptions.addEventListener('change', (e) => {
+      const isChecked = e.target.checked;
+      localStorage.setItem('ytmc_show_debug', isChecked ? 'true' : 'false');
+      elements.debugSection.style.display = isChecked ? 'block' : 'none';
+      if (isChecked) {
+        refreshDebugStatusBar();
+      }
+    });
+  }
+
   // Update tags
   refreshDebugStatusBar();
 

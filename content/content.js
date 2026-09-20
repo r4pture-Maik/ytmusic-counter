@@ -416,7 +416,7 @@
               <polygon points="10,8 16,12 10,16" fill="currentColor"/>
             </svg>
           </div>
-          <span class="ytmc-scanner-title">YTMusic History Scanner</span>
+          <span class="ytmc-scanner-title">Listening History Sync</span>
         </div>
         <div class="ytmc-scanner-controls">
           <button type="button" class="ytmc-btn-mini" id="ytmc-minimize-btn" title="Minimize">—</button>
@@ -426,25 +426,25 @@
       <div class="ytmc-scanner-body">
         <div class="ytmc-scanner-metrics">
           <div class="ytmc-metric-card">
-            <span class="ytmc-metric-label">Plays Detected</span>
+            <span class="ytmc-metric-label">Plays Found</span>
             <span class="ytmc-metric-val" id="ytmc-scan-count">0</span>
           </div>
           <div class="ytmc-metric-card">
-            <span class="ytmc-metric-label">Unique Songs</span>
+            <span class="ytmc-metric-label">Different Songs</span>
             <span class="ytmc-metric-val" id="ytmc-scan-unique">0</span>
           </div>
         </div>
         <div class="ytmc-scanner-status-box">
           <div class="ytmc-status-spinner" id="ytmc-scan-spinner"></div>
-          <span id="ytmc-scan-note">Ready to scan your YouTube Music listening history.</span>
+          <span id="ytmc-scan-note">Ready to sync your listening history.</span>
         </div>
         <div style="font-size: 11px; color: #888; display: flex; align-items: center; gap: 6px;">
           <input type="checkbox" id="ytmc-force-rescan-cb">
-          <label for="ytmc-force-rescan-cb" style="cursor: pointer;">Force full rescan (ignore date offset)</label>
+          <label for="ytmc-force-rescan-cb" style="cursor: pointer;">Re-scan full history from the beginning</label>
         </div>
         <div class="ytmc-scanner-actions">
           <button type="button" class="ytmc-btn-scan-start" id="ytmc-start-scan-btn">
-            <span>▶ Start Auto-Scan</span>
+            <span>▶ Start Sync</span>
           </button>
           <button type="button" class="ytmc-btn-scan-stop" id="ytmc-stop-scan-btn" disabled>
             <span>⏹ Stop &amp; Save</span>
@@ -512,8 +512,8 @@
     if (spinner) spinner.style.display = 'block';
     if (note) {
       note.textContent = activeSyncState
-        ? `Incremental scan active (checking since "${activeSyncState.lastDateHeader}")...`
-        : 'Scanning and extracting history items...';
+        ? `Checking for new plays since "${activeSyncState.lastDateHeader}"...`
+        : 'Scanning your listening history...';
     }
 
     // Broadcast starting state
@@ -523,7 +523,7 @@
         count: 0,
         unique: 0,
         latestTrack: null,
-        statusText: activeSyncState ? 'Incremental scan active...' : 'Auto-scrolling history...'
+        statusText: activeSyncState ? 'Checking for new plays...' : 'Finding plays in history...'
       }
     });
 
@@ -617,7 +617,7 @@
           count: scannedTracks.length,
           unique: uniqueSet.size,
           latestTrack: latestExtracted || (scannedTracks.length > 0 ? scannedTracks[scannedTracks.length - 1] : null),
-          statusText: reachedBoundary ? 'Reached sync boundary!' : 'Reading & importing plays...'
+          statusText: reachedBoundary ? 'All caught up!' : 'Reading songs...'
         }
       });
 
@@ -630,7 +630,7 @@
 
       if (reachedBoundary) {
         console.log('[YTMC Offset] Date boundary reached! Stopping scan now.');
-        stopAndSaveHistory(true, 'Boundary reached');
+        stopAndSaveHistory(true, 'All caught up');
         return;
       }
 
@@ -685,7 +685,7 @@
     };
 
     if (scannedTracks.length === 0) {
-      const msg = activeSyncState ? 'No new plays detected since last scan (all up to date).' : 'No tracks found in history.';
+      const msg = activeSyncState ? 'No new plays found (already up to date).' : 'No tracks found in history.';
       if (note) note.textContent = msg;
       extBrowser.storage.local.set({
         scanProgress: {
@@ -700,7 +700,7 @@
       return;
     }
 
-    if (note) note.textContent = `Saving ${scannedTracks.length} plays to extension storage...`;
+    if (note) note.textContent = `Saving ${scannedTracks.length} plays...`;
 
     extBrowser.storage.local.set({
       scanProgress: {
@@ -708,7 +708,7 @@
         count: scannedTracks.length,
         unique: new Set(scannedTracks.map(t => `${t.title.toLowerCase()}:::${(t.artist || '').toLowerCase()}`)).size,
         latestTrack: scannedTracks[scannedTracks.length - 1],
-        statusText: `Saving ${scannedTracks.length} plays to storage...`
+        statusText: `Saving ${scannedTracks.length} plays...`
       }
     });
 
@@ -722,7 +722,7 @@
       const res = response && response.data;
       const importedCount = (res && res.importedCount) || scannedTracks.length;
       if (note) {
-        note.innerHTML = `<b>Success!</b> Imported ${importedCount} new plays (${reason || 'Completed'}).`;
+        note.innerHTML = `<b>Success!</b> Synced ${importedCount} plays (${reason || 'Completed'}).`;
       }
 
       extBrowser.storage.local.set({
@@ -731,7 +731,7 @@
           count: importedCount,
           unique: (res && res.uniqueSongs) || 0,
           latestTrack: null,
-          statusText: `Done! Imported ${importedCount} new plays (${reason || 'Completed'}).`
+          statusText: `Done! Synced ${importedCount} plays (${reason || 'Completed'}).`
         },
         historySyncState: newSyncState
       });

@@ -19,7 +19,7 @@
         </div>
         <div class="brand-title">
           <h1>YTMusic Counter</h1>
-          <span class="badge">Details &amp; Config</span>
+          <span class="badge">Stats &amp; Settings</span>
         </div>
       </div>
 
@@ -29,14 +29,14 @@
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M18 20V10M12 20V4M6 20v-6"/>
           </svg>
-          <span>Details</span>
+          <span>Overview</span>
         </button>
         <button class="nav-tab" id="tabBtnConfig" data-target="configPanel" role="tab" aria-selected="false">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"/>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
           </svg>
-          <span>Config</span>
+          <span>Settings</span>
         </button>
       </nav>
 
@@ -56,16 +56,16 @@
       <section class="tab-panel active" id="detailsPanel" role="tabpanel">
         <div class="panel-header">
           <div class="panel-heading">
-            <h2>Listening Details</h2>
-            <p class="panel-subtitle">Comprehensive statistics and metrics for your YouTube Music listening journey.</p>
+            <h2>Listening Overview</h2>
+            <p class="panel-subtitle">Your personal listening statistics and history on YouTube Music.</p>
           </div>
           <div class="live-status">
             <span class="status-dot"></span>
-            <span>Live Sync Active</span>
+            <span>Active Tracking</span>
           </div>
         </div>
 
-        <!-- Total Songs Listened Row (Primary Hero Row) -->
+        <!-- Total Songs Played Row (Primary Hero Row) -->
         <div class="details-row hero-row">
           <div class="row-icon-wrapper">
             <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2">
@@ -75,16 +75,16 @@
             </svg>
           </div>
           <div class="row-content">
-            <span class="row-label">Totals Song Listened</span>
+            <span class="row-label">Total Songs Played</span>
             <div class="row-value-group">
               <span class="row-value" id="totalSongsListened">0</span>
               <span class="row-unit">total plays</span>
             </div>
-            <p class="row-description">Cumulative count of songs played on YouTube Music through this extension.</p>
+            <p class="row-description">Total number of songs played while using the extension.</p>
           </div>
           <div class="row-badge-side">
             <div class="mini-stat-card">
-              <span class="mini-label">Unique Songs</span>
+              <span class="mini-label">Different Songs</span>
               <span class="mini-value" id="uniqueSongsStat">0</span>
             </div>
           </div>
@@ -102,7 +102,7 @@
               </svg>
             </div>
             <div class="card-info">
-              <span class="card-title">Tracked Artists</span>
+              <span class="card-title">Artists</span>
               <span class="card-value" id="uniqueArtistsStat">0</span>
             </div>
           </div>
@@ -117,7 +117,7 @@
               </svg>
             </div>
             <div class="card-info">
-              <span class="card-title">Tracked Albums</span>
+              <span class="card-title">Albums</span>
               <span class="card-value" id="trackedAlbumsStat">0</span>
             </div>
           </div>
@@ -130,7 +130,7 @@
               </svg>
             </div>
             <div class="card-info">
-              <span class="card-title">Singles Tracked</span>
+              <span class="card-title">Singles</span>
               <span class="card-value" id="singlesStat">0</span>
             </div>
           </div>
@@ -142,7 +142,7 @@
               </svg>
             </div>
             <div class="card-info">
-              <span class="card-title">Completed Full Albums</span>
+              <span class="card-title">Albums Finished</span>
               <span class="card-value" id="completedAlbumsStat">0</span>
             </div>
           </div>
@@ -154,7 +154,7 @@
               </svg>
             </div>
             <div class="card-info">
-              <span class="card-title">Last Detected Track</span>
+              <span class="card-title">Now Playing</span>
               <span class="card-value-text" id="activeTrackTitle">No track currently active</span>
               <span class="card-subtext" id="activeTrackArtist">-</span>
             </div>
@@ -165,8 +165,8 @@
         <div class="albums-breakdown-section">
           <div class="section-header-bar">
             <div class="section-title-group">
-              <h3>Tracked Albums &amp; Completion</h3>
-              <p class="section-subtext">Compare songs you have listened to against full album tracklists.</p>
+              <h3>Album Listening Progress</h3>
+              <p class="section-subtext">See which songs you've heard from each album and track your progress.</p>
             </div>
             <button type="button" class="btn-secondary" id="refreshAlbumsBreakdownBtn">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
@@ -177,71 +177,50 @@
             </button>
           </div>
           <div class="albums-list-container" id="albumsBreakdownList">
-            <div class="empty-state-card">No albums tracked yet. Scan your listening history to view albums.</div>
+            <div class="empty-state-card">No albums tracked yet. Sync your listening history or play an album to get started.</div>
           </div>
         </div>
       </section>
 
-      <!-- CONFIG TAB PANEL -->
+      <!-- CONFIG / SETTINGS TAB PANEL -->
       <section class="tab-panel" id="configPanel" role="tabpanel">
         <div class="panel-header">
           <div class="panel-heading">
-            <h2>Configuration &amp; Data Management</h2>
-            <p class="panel-subtitle">Manage extension settings, preferences, and stored tracking statistics.</p>
+            <h2>Settings &amp; Data</h2>
+            <p class="panel-subtitle">Manage your extension settings, sync history, and data preferences.</p>
           </div>
         </div>
 
-        <!-- General Settings Group -->
-        <div class="config-section">
-          <h3 class="config-section-title">Storage Information</h3>
-          <div class="card config-card">
-            <div class="config-info-row">
-              <div class="config-info-text">
-                <div class="config-item-title">Storage Engine</div>
-                <div class="config-item-desc">Browser Local Storage (<code class="code-badge">browser.storage.local</code>)</div>
-              </div>
-              <span class="badge badge-success">Optimized O(1) Maps</span>
-            </div>
-            <div class="config-info-row">
-              <div class="config-info-text">
-                <div class="config-item-title">Auto-Sync Status</div>
-                <div class="config-item-desc">Listens to realtime changes across tabs and background process</div>
-              </div>
-              <span class="badge badge-neutral">Enabled</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- History Scanner Section -->
+        <!-- History Sync Section -->
         <div class="config-section">
           <h3 class="config-section-title">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="11" cy="11" r="8"/>
               <line x1="21" y1="21" x2="16.65" y2="16.65"/>
             </svg>
-            YouTube Music History Scanner
+            Listening History Sync
           </h3>
           <div class="card config-card">
             <div class="config-info-row scanner-cta-row">
               <div class="config-info-text">
-                <div class="config-item-title">Import Listening History</div>
-                <div class="config-item-desc">Automatically scan your YouTube Music playback history (<code class="code-badge">music.youtube.com/history</code>) to import all past plays, songs, and artists into your extension stats.</div>
+                <div class="config-item-title">Sync Previous History</div>
+                <div class="config-item-desc">Import past plays directly from YouTube Music to include your previous listening history in your stats.</div>
 
                 <div class="sync-state-pill" id="historySyncPill">
                   <span class="sync-dot" id="historySyncDot"></span>
-                  <span id="historySyncText">Sync Status: Checking previous sync...</span>
+                  <span id="historySyncText">Checking sync status...</span>
                 </div>
 
                 <label class="force-rescan-label" for="forceRescanCheckbox">
                   <input type="checkbox" id="forceRescanCheckbox">
-                  <span>Force full rescan (ignore date boundary)</span>
+                  <span>Re-scan full history from the beginning</span>
                 </label>
               </div>
               <button type="button" class="btn-primary-action" id="launchHistoryScannerBtn">
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
                   <polygon points="5,3 19,12 5,21"/>
                 </svg>
-                <span>Launch Scanner</span>
+                <span>Start History Sync</span>
               </button>
             </div>
 
@@ -250,20 +229,36 @@
               <div class="scanner-live-header">
                 <div class="scanner-live-status-group">
                   <div class="ytmc-config-spinner" id="scannerConfigSpinner"></div>
-                  <span class="scanner-live-badge" id="scannerLiveBadge">Scanning History...</span>
+                  <span class="scanner-live-badge" id="scannerLiveBadge">Syncing History...</span>
                 </div>
-                <span class="scanner-live-counts" id="scannerLiveCounts">0 plays detected</span>
+                <span class="scanner-live-counts" id="scannerLiveCounts">0 plays found</span>
               </div>
               <div class="scanner-importing-card">
-                <span class="importing-label">Currently reading &amp; importing:</span>
-                <div class="importing-track-name" id="scannerImportingTrack">Initializing...</div>
+                <span class="importing-label">Now syncing:</span>
+                <div class="importing-track-name" id="scannerImportingTrack">Connecting...</div>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- [DEBUG SECTION - Easy to inspect and revert] -->
-        <div class="config-section debug-section" id="debugSection">
+        <!-- Debug Options Toggle Card -->
+        <div class="config-section">
+          <div class="card config-card debug-toggle-card">
+            <div class="debug-toggle-wrapper">
+              <div class="debug-toggle-info">
+                <div class="config-item-title">Debug Options</div>
+                <div class="config-item-desc">Show developer diagnostics, connection checks, and live debug logs.</div>
+              </div>
+              <label class="toggle-switch" for="toggleDebugOptions" title="Toggle debug options">
+                <input type="checkbox" id="toggleDebugOptions">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- [DEBUG SECTION - Hidden by default behind Debug Options toggle] -->
+        <div class="config-section debug-section" id="debugSection" style="display: none;">
           <div class="debug-header-row">
             <h3 class="config-section-title text-debug">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
@@ -299,14 +294,14 @@
               <line x1="12" y1="9" x2="12" y2="13"/>
               <line x1="12" y1="17" x2="12.01" y2="17"/>
             </svg>
-            Danger Zone
+            Reset Data
           </h3>
 
           <div class="card danger-card">
             <div class="danger-card-header">
               <div>
-                <h4 class="danger-card-title">Delete All Data</h4>
-                <p class="danger-card-desc">Permanently wipe all song play counts, artist stats, and completed album milestones from your browser storage. This cannot be undone.</p>
+                <h4 class="danger-card-title">Reset All Data</h4>
+                <p class="danger-card-desc">Permanently clear all your saved play counts, artists, and album listening history. This cannot be undone.</p>
               </div>
             </div>
 
@@ -321,7 +316,7 @@
                     <line x1="10" y1="11" x2="10" y2="17"/>
                     <line x1="14" y1="11" x2="14" y2="17"/>
                   </svg>
-                  <span>Delete All Data</span>
+                  <span>Reset All Data</span>
                 </button>
               </div>
 
@@ -330,9 +325,9 @@
                 <div class="confirm-box step-1-box">
                   <div class="confirm-header">
                     <span class="confirm-badge">Confirmation 1 of 3</span>
-                    <h5>Are you sure you want to delete all data?</h5>
+                    <h5>Are you sure you want to reset all data?</h5>
                   </div>
-                  <p class="confirm-note">This action will delete all recorded play counts and statistics stored in this extension.</p>
+                  <p class="confirm-note">This will erase all recorded play counts and statistics from the extension.</p>
                   <div class="confirm-actions">
                     <button type="button" class="btn-cancel" id="cancelStep1Btn">Cancel</button>
                     <button type="button" class="btn-warning" id="confirmStep1Btn">
@@ -350,13 +345,13 @@
                 <div class="confirm-box step-2-box">
                   <div class="confirm-header">
                     <span class="confirm-badge confirm-badge-escalated">Confirmation 2 of 3</span>
-                    <h5>Please double-check: this is irreversible!</h5>
+                    <h5>Please double-check: this cannot be undone!</h5>
                   </div>
-                  <p class="confirm-note">All your lifetime stats, including top songs, top artists, and full album listens will be permanently removed.</p>
+                  <p class="confirm-note">All your stats, including top songs, artists, and album progress, will be permanently removed.</p>
                   <div class="confirm-actions">
                     <button type="button" class="btn-cancel" id="cancelStep2Btn">Cancel</button>
                     <button type="button" class="btn-warning-escalated" id="confirmStep2Btn">
-                      <span>I understand the consequences (2/3)</span>
+                      <span>I understand, continue (2/3)</span>
                       <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="9 18 15 12 9 6"/>
                       </svg>
@@ -370,9 +365,9 @@
                 <div class="confirm-box step-3-box">
                   <div class="confirm-header">
                     <span class="confirm-badge confirm-badge-final">Confirmation 3 of 3 (Final)</span>
-                    <h5>Final Confirmation: Wipe all data now?</h5>
+                    <h5>Final confirmation: reset all data now?</h5>
                   </div>
-                  <p class="confirm-note">Clicking the button below will immediately wipe all extension storage.</p>
+                  <p class="confirm-note">Clicking the button below will immediately clear all your stored data.</p>
                   <div class="confirm-actions">
                     <button type="button" class="btn-cancel" id="cancelStep3Btn">Cancel</button>
                     <button type="button" class="btn-danger-final" id="confirmStep3Btn">
@@ -381,7 +376,7 @@
                         <line x1="12" y1="9" x2="12" y2="13"/>
                         <line x1="12" y1="17" x2="12.01" y2="17"/>
                       </svg>
-                      <span>Permanently Delete All Data (3/3)</span>
+                      <span>Permanently Reset Everything (3/3)</span>
                     </button>
                   </div>
                 </div>
@@ -393,7 +388,7 @@
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="20 6 9 17 4 12"/>
               </svg>
-              <span>All data has been successfully deleted. Counters are reset to zero.</span>
+              <span>All data has been reset to zero.</span>
             </div>
           </div>
         </div>
