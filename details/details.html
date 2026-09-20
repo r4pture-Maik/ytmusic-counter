@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YTMusic Counter - Details &amp; Settings</title>
+  <link rel="stylesheet" href="details.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Top Navigation Bar -->
+    <header class="navbar">
+      <div class="nav-brand">
+        <div class="brand-logo">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+            <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
+            <polygon points="10,8 16,12 10,16" fill="currentColor"/>
+          </svg>
+        </div>
+        <div class="brand-title">
+          <h1>YTMusic Counter</h1>
+          <span class="badge">Details &amp; Config</span>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <nav class="nav-tabs" role="tablist">
+        <button class="nav-tab active" id="tabBtnDetails" data-target="detailsPanel" role="tab" aria-selected="true">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 20V10M12 20V4M6 20v-6"/>
+          </svg>
+          <span>Details</span>
+        </button>
+        <button class="nav-tab" id="tabBtnConfig" data-target="configPanel" role="tab" aria-selected="false">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          <span>Config</span>
+        </button>
+      </nav>
+
+      <div class="nav-actions">
+        <a href="https://music.youtube.com" target="_blank" class="btn-secondary" id="openYtMusicExternal">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+            <polygon points="5,3 19,12 5,21"/>
+          </svg>
+          <span>Open YT Music</span>
+        </a>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="content-container">
+      <!-- DETAILS TAB PANEL -->
+      <section class="tab-panel active" id="detailsPanel" role="tabpanel">
+        <div class="panel-header">
+          <div class="panel-heading">
+            <h2>Listening Details</h2>
+            <p class="panel-subtitle">Comprehensive statistics and metrics for your YouTube Music listening journey.</p>
+          </div>
+          <div class="live-status">
+            <span class="status-dot"></span>
+            <span>Live Sync Active</span>
+          </div>
+        </div>
+
+        <!-- Total Songs Listened Row (Primary Hero Row) -->
+        <div class="details-row hero-row">
+          <div class="row-icon-wrapper">
+            <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 18V5l12-2v13"/>
+              <circle cx="6" cy="18" r="3"/>
+              <circle cx="18" cy="16" r="3"/>
+            </svg>
+          </div>
+          <div class="row-content">
+            <span class="row-label">Totals Song Listened</span>
+            <div class="row-value-group">
+              <span class="row-value" id="totalSongsListened">0</span>
+              <span class="row-unit">total plays</span>
+            </div>
+            <p class="row-description">Cumulative count of songs played on YouTube Music through this extension.</p>
+          </div>
+          <div class="row-badge-side">
+            <div class="mini-stat-card">
+              <span class="mini-label">Unique Songs</span>
+              <span class="mini-value" id="uniqueSongsStat">0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Secondary Info Cards -->
+        <div class="details-grid">
+          <div class="card stat-card">
+            <div class="card-icon artists-icon">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+              </svg>
+            </div>
+            <div class="card-info">
+              <span class="card-title">Tracked Artists</span>
+              <span class="card-value" id="uniqueArtistsStat">0</span>
+            </div>
+          </div>
+
+          <div class="card stat-card">
+            <div class="card-icon albums-icon">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                <circle cx="12" cy="12" r="4"/>
+                <line x1="12" y1="2" x2="12" y2="4"/>
+                <line x1="12" y1="20" x2="12" y2="22"/>
+              </svg>
+            </div>
+            <div class="card-info">
+              <span class="card-title">Completed Full Albums</span>
+              <span class="card-value" id="completedAlbumsStat">0</span>
+            </div>
+          </div>
+
+          <div class="card stat-card" id="nowPlayingCard">
+            <div class="card-icon now-playing-icon">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                <polygon points="5,3 19,12 5,21"/>
+              </svg>
+            </div>
+            <div class="card-info">
+              <span class="card-title">Last Detected Track</span>
+              <span class="card-value-text" id="activeTrackTitle">No track currently active</span>
+              <span class="card-subtext" id="activeTrackArtist">-</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CONFIG TAB PANEL -->
+      <section class="tab-panel" id="configPanel" role="tabpanel">
+        <div class="panel-header">
+          <div class="panel-heading">
+            <h2>Configuration &amp; Data Management</h2>
+            <p class="panel-subtitle">Manage extension settings, preferences, and stored tracking statistics.</p>
+          </div>
+        </div>
+
+        <!-- General Settings Group -->
+        <div class="config-section">
+          <h3 class="config-section-title">Storage Information</h3>
+          <div class="card config-card">
+            <div class="config-info-row">
+              <div class="config-info-text">
+                <div class="config-item-title">Storage Engine</div>
+                <div class="config-item-desc">Browser Local Storage (<code class="code-badge">browser.storage.local</code>)</div>
+              </div>
+              <span class="badge badge-success">Optimized O(1) Maps</span>
+            </div>
+            <div class="config-info-row">
+              <div class="config-info-text">
+                <div class="config-item-title">Auto-Sync Status</div>
+                <div class="config-item-desc">Listens to realtime changes across tabs and background process</div>
+              </div>
+              <span class="badge badge-neutral">Enabled</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Danger Zone: 3-step Confirmation Delete -->
+        <div class="config-section danger-section">
+          <h3 class="config-section-title text-danger">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+              <line x1="12" y1="9" x2="12" y2="13"/>
+              <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            Danger Zone
+          </h3>
+
+          <div class="card danger-card">
+            <div class="danger-card-header">
+              <div>
+                <h4 class="danger-card-title">Delete All Data</h4>
+                <p class="danger-card-desc">Permanently wipe all song play counts, artist stats, and completed album milestones from your browser storage. This cannot be undone.</p>
+              </div>
+            </div>
+
+            <!-- Confirmation Flow State Machine UI -->
+            <div class="wipe-flow" id="wipeFlowContainer">
+              <!-- Step 0: Idle State -->
+              <div class="wipe-step-view active" id="wipeStep0">
+                <button type="button" class="btn-danger" id="initiateDeleteBtn">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                    <line x1="10" y1="11" x2="10" y2="17"/>
+                    <line x1="14" y1="11" x2="14" y2="17"/>
+                  </svg>
+                  <span>Delete All Data</span>
+                </button>
+              </div>
+
+              <!-- Step 1: First Confirmation -->
+              <div class="wipe-step-view" id="wipeStep1">
+                <div class="confirm-box step-1-box">
+                  <div class="confirm-header">
+                    <span class="confirm-badge">Confirmation 1 of 3</span>
+                    <h5>Are you sure you want to delete all data?</h5>
+                  </div>
+                  <p class="confirm-note">This action will delete all recorded play counts and statistics stored in this extension.</p>
+                  <div class="confirm-actions">
+                    <button type="button" class="btn-cancel" id="cancelStep1Btn">Cancel</button>
+                    <button type="button" class="btn-warning" id="confirmStep1Btn">
+                      <span>Yes, Continue (1/3)</span>
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="9 18 15 12 9 6"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Step 2: Second Confirmation -->
+              <div class="wipe-step-view" id="wipeStep2">
+                <div class="confirm-box step-2-box">
+                  <div class="confirm-header">
+                    <span class="confirm-badge confirm-badge-escalated">Confirmation 2 of 3</span>
+                    <h5>Please double-check: this is irreversible!</h5>
+                  </div>
+                  <p class="confirm-note">All your lifetime stats, including top songs, top artists, and full album listens will be permanently removed.</p>
+                  <div class="confirm-actions">
+                    <button type="button" class="btn-cancel" id="cancelStep2Btn">Cancel</button>
+                    <button type="button" class="btn-warning-escalated" id="confirmStep2Btn">
+                      <span>I understand the consequences (2/3)</span>
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="9 18 15 12 9 6"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Step 3: Final Confirmation -->
+              <div class="wipe-step-view" id="wipeStep3">
+                <div class="confirm-box step-3-box">
+                  <div class="confirm-header">
+                    <span class="confirm-badge confirm-badge-final">Confirmation 3 of 3 (Final)</span>
+                    <h5>Final Confirmation: Wipe all data now?</h5>
+                  </div>
+                  <p class="confirm-note">Clicking the button below will immediately wipe all extension storage.</p>
+                  <div class="confirm-actions">
+                    <button type="button" class="btn-cancel" id="cancelStep3Btn">Cancel</button>
+                    <button type="button" class="btn-danger-final" id="confirmStep3Btn">
+                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                      </svg>
+                      <span>Permanently Delete All Data (3/3)</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Success Alert Notification -->
+            <div class="alert-success" id="deleteSuccessAlert" style="display: none;">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+              <span>All data has been successfully deleted. Counters are reset to zero.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="details.js"></script>
+</body>
+</html>
