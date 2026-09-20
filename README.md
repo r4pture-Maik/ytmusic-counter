@@ -71,3 +71,29 @@ about:debugging#/runtime/this-firefox
    - View your **Total Plays**, **Unique Songs**, **Unique Artists**, and **Full Albums** completed.
    - Switch between the **Top Songs**, **Artists**, and **Full Albums** tabs.
    - Check the **Now Playing** card displaying the active song's play count.
+
+---
+
+## 🔒 Privacy & Data Collection
+
+**YTMusic Counter is 100% privacy-friendly:**
+- **Zero data collection**: No telemetry, analytics, or personal identifiers.
+- **Zero remote transmission**: No outbound network requests to external servers.
+- **100% on-device storage**: All counts are kept exclusively inside your browser's local sandbox storage (`browser.storage.local`).
+
+Read the complete [Privacy Policy](PRIVACY.md) for full details and permission explanations.
+
+---
+
+## ⚖️ Disclaimer & Trademark Notice
+
+YouTube and YouTube Music are registered trademarks of Google LLC. 
+
+**YTMusic Counter** is an independent, open-source project and is not affiliated with, endorsed by, sponsored by, or connected to Google LLC, YouTube, or Alphabet Inc.
+
+---
+
+## 📄 License
+
+This project is licensed under the **[MIT License](LICENSE)** - see the [LICENSE](LICENSE) file for details.
+
