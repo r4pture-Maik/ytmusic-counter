@@ -25,6 +25,9 @@ const elements = {
   activeTrackArtist: document.getElementById('activeTrackArtist'),
   refreshAlbumsBreakdownBtn: document.getElementById('refreshAlbumsBreakdownBtn'),
   albumsBreakdownList: document.getElementById('albumsBreakdownList'),
+  toggleAllAlbumsBtn: document.getElementById('toggleAllAlbumsBtn'),
+  toggleAllAlbumsText: document.getElementById('toggleAllAlbumsText'),
+  albumsSectionSubtext: document.getElementById('albumsSectionSubtext'),
 
   // 3-Step Wipe Container & Views
   wipeStep0: document.getElementById('wipeStep0'),
@@ -69,6 +72,11 @@ const elements = {
   debugScanStatus: document.getElementById('debugScanStatus'),
   debugConsole: document.getElementById('debugConsole')
 };
+
+// State for Album Display (Top 3 vs All)
+let showingAllAlbums = false;
+let currentTopAlbums = [];
+let currentAllAlbums = [];
 
 /* ==========================================================================
    Tab Navigation
@@ -135,6 +143,9 @@ async function fetchStatsDirectlyFromStorage() {
     const singlesCount = Object.values(songs).filter(s => s.isSingle || !s.album).length;
     const completedAlbumsCount = Object.values(cleanedAlbums).reduce((sum, a) => sum + (a.completePlays || 0), 0);
 
+    const sortedAlbums = Object.values(cleanedAlbums)
+      .sort((a, b) => ((b.completePlays || 0) * 100 + (b.playCount || 0)) - ((a.completePlays || 0) * 100 + (a.playCount || 0)));
+
     const compiledStats = {
       totalPlays: data.totalPlays || 0,
       uniqueSongsCount: Object.keys(songs).length,
@@ -142,7 +153,8 @@ async function fetchStatsDirectlyFromStorage() {
       uniqueAlbumsCount: Object.keys(cleanedAlbums).length,
       singlesCount,
       completedAlbumsCount,
-      topAlbums: Object.values(cleanedAlbums).sort((a, b) => ((b.completePlays || 0) * 100 + (b.playCount || 0)) - ((a.completePlays || 0) * 100 + (a.playCount || 0))),
+      topAlbums: sortedAlbums.slice(0, 3),
+      allAlbums: sortedAlbums,
       currentTrack: data.currentTrack || null
     };
     renderStats(compiledStats);
@@ -205,11 +217,37 @@ function renderStats(stats) {
   }
 
   // Render Albums Breakdown List
-  renderAlbumsBreakdown(stats.topAlbums || []);
+  currentTopAlbums = (stats.topAlbums || []).slice(0, 3);
+  currentAllAlbums = (stats.allAlbums || stats.topAlbums || []);
+  renderAlbumsBreakdown();
 }
 
-function renderAlbumsBreakdown(albums) {
+function renderAlbumsBreakdown() {
   if (!elements.albumsBreakdownList) return;
+  const albums = showingAllAlbums ? currentAllAlbums : currentTopAlbums;
+  const totalCount = currentAllAlbums.length;
+
+  if (elements.toggleAllAlbumsBtn && elements.toggleAllAlbumsText) {
+    if (totalCount > 3) {
+      elements.toggleAllAlbumsBtn.style.display = 'inline-flex';
+      elements.toggleAllAlbumsText.textContent = showingAllAlbums 
+        ? 'Show Top 3 Only' 
+        : `Show All (${totalCount})`;
+    } else {
+      elements.toggleAllAlbumsBtn.style.display = 'none';
+    }
+  }
+
+  if (elements.albumsSectionSubtext) {
+    if (totalCount > 3) {
+      elements.albumsSectionSubtext.textContent = showingAllAlbums
+        ? `Showing all ${totalCount} tracked albums.`
+        : `Showing Top 3 most played albums (${totalCount} total tracked).`;
+    } else {
+      elements.albumsSectionSubtext.textContent = `See which songs you've heard from each album and track your progress.`;
+    }
+  }
+
   if (!albums || albums.length === 0) {
     elements.albumsBreakdownList.innerHTML = '<div class="empty-state-card">No albums tracked yet. Sync your listening history or play an album to get started.</div>';
     return;
@@ -231,6 +269,10 @@ function renderAlbumsBreakdown(albums) {
       statusText = `${uniqueTracks} ${uniqueTracks === 1 ? 'song' : 'songs'} played`;
     }
 
+    const cleanArtistName = (album.artist || '').split('•')[0].trim();
+    const hasDistinctArtist = cleanArtistName && cleanArtistName.toLowerCase() !== (album.album || '').toLowerCase();
+    const artistSubtitle = hasDistinctArtist ? `${escapeHtml(cleanArtistName)} • ` : '';
+
     const cardId = `album-card-${idx}`;
     card.innerHTML = `
       <div class="album-card-top">
@@ -240,7 +282,7 @@ function renderAlbumsBreakdown(albums) {
           </div>
           <div class="album-meta-text">
             <div class="album-name" title="${escapeHtml(album.album)}">${escapeHtml(album.album)}</div>
-            <div class="album-artist" title="${escapeHtml(album.artist)}">${escapeHtml(album.artist)} • ${album.playCount} total ${album.playCount === 1 ? 'play' : 'plays'}</div>
+            <div class="album-artist" title="${escapeHtml(cleanArtistName || album.album)}">${artistSubtitle}${album.playCount} total ${album.playCount === 1 ? 'play' : 'plays'}</div>
           </div>
         </div>
         <div class="album-card-right">
@@ -578,6 +620,12 @@ document.addEventListener('DOMContentLoaded', () => {
   setupDebugSection();
   if (elements.refreshAlbumsBreakdownBtn) {
     elements.refreshAlbumsBreakdownBtn.addEventListener('click', loadStats);
+  }
+  if (elements.toggleAllAlbumsBtn) {
+    elements.toggleAllAlbumsBtn.addEventListener('click', () => {
+      showingAllAlbums = !showingAllAlbums;
+      renderAlbumsBreakdown();
+    });
   }
   loadStats();
   checkScanProgress();

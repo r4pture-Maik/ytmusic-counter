@@ -228,8 +228,7 @@ body {
 .grouped-section {
   display: flex;
   flex-direction: column;
-  min-height: 170px;
-  max-height: 200px;
+  min-height: 160px;
 }
 
 .tab-bar {
@@ -266,7 +265,6 @@ body {
 
 .tab-content {
   display: none;
-  overflow-y: auto;
   flex: 1;
 }
 
@@ -280,45 +278,51 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding-right: 2px;
-  max-height: 140px;
-  overflow-y: auto;
+  overflow: visible;
 }
 
 .ranked-list::-webkit-scrollbar {
-  width: 4px;
-}
-
-.ranked-list::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 4px;
+  display: none;
 }
 
 .ranked-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 5px 8px;
+  padding: 6px 10px;
   background: var(--bg-item);
   border-radius: 6px;
   font-size: 12px;
   gap: 8px;
+  border: 1px solid transparent;
+  transition: var(--transition);
 }
 
-.ranked-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
+.ranked-item:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 .rank-index {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   color: var(--text-muted);
-  width: 14px;
+  width: 16px;
   text-align: right;
   flex-shrink: 0;
+}
+
+/* Podium Rank Accents */
+.ranked-item:nth-child(1) .rank-index {
+  color: #f59e0b;
+}
+
+.ranked-item:nth-child(2) .rank-index {
+  color: #94a3b8;
+}
+
+.ranked-item:nth-child(3) .rank-index {
+  color: #d97706;
 }
 
 .rank-name {

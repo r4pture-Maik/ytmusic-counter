@@ -166,15 +166,20 @@
           <div class="section-header-bar">
             <div class="section-title-group">
               <h3>Album Listening Progress</h3>
-              <p class="section-subtext">See which songs you've heard from each album and track your progress.</p>
+              <p class="section-subtext" id="albumsSectionSubtext">See which songs you've heard from each album and track your progress.</p>
             </div>
-            <button type="button" class="btn-secondary" id="refreshAlbumsBreakdownBtn">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M23 4v6h-6M1 20v-6h6"/>
-                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-              </svg>
-              <span>Refresh</span>
-            </button>
+            <div class="section-header-actions" style="display: flex; gap: 8px; align-items: center;">
+              <button type="button" class="btn-secondary" id="toggleAllAlbumsBtn" style="display: none;">
+                <span id="toggleAllAlbumsText">Show All Albums</span>
+              </button>
+              <button type="button" class="btn-secondary" id="refreshAlbumsBreakdownBtn">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M23 4v6h-6M1 20v-6h6"/>
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+                <span>Refresh</span>
+              </button>
+            </div>
           </div>
           <div class="albums-list-container" id="albumsBreakdownList">
             <div class="empty-state-card">No albums tracked yet. Sync your listening history or play an album to get started.</div>

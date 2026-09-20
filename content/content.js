@@ -74,9 +74,21 @@
         if (!album && !isSingle && textParts[1]) album = textParts[1];
       }
 
-      if (album && (/^single(\s*-\s*ep)?$/i.test(album) || /^ep$/i.test(album))) {
+      // Sanitize bullets in artist and album
+      if (artist && artist.includes('•')) {
+        const parts = artist.split('•').map(p => p.trim()).filter(Boolean);
+        artist = parts[0] || '';
+        if (!album && parts[1] && !/^\d+:\d+$/.test(parts[1])) album = parts[1];
+      }
+
+      if (album && (/^single(\s*-\s*ep)?$/i.test(album) || /^ep$/i.test(album) || /^\d+:\d+(:\d+)?$/.test(album))) {
         isSingle = true;
         album = '';
+      }
+
+      if (artist && album && artist.toLowerCase() === album.toLowerCase()) {
+        album = '';
+        isSingle = true;
       }
     }
 
@@ -307,23 +319,28 @@
       isSingle = true;
     }
 
-    // 2. Extract Artist & Album via specific YouTube Music anchor links
-    // Artist links typically contain "/channel/" or "/browse/UC" or "/browse/FEmusic_library"
-    const artistLinks = Array.from(item.querySelectorAll('.secondary-flex-columns a, .flex-columns a, a')).filter(a => {
+    // 2. Extract Artist & Album via links inside secondary columns
+    const secLinks = Array.from(item.querySelectorAll('.secondary-flex-columns a, yt-formatted-string.subtitle a, .subtitle a, .byline a'));
+    
+    const artistLinks = [];
+    const albumLinks = [];
+
+    secLinks.forEach(a => {
       const href = a.getAttribute('href') || '';
-      return href.includes('/channel/') || href.includes('/browse/UC') || href.includes('browse/FEmusic_library');
+      const text = a.textContent.trim();
+      if (!text) return;
+
+      if (href.includes('browse/MPREb') || href.includes('browse/OLAK5uy') || 
+          href.includes('playlist?list=OLAK5uy') || href.includes('playlist?list=MPREb')) {
+        albumLinks.push(a);
+      } else if (href.includes('channel/') || href.includes('browse/UC') || href.includes('browse/FEmusic_library')) {
+        artistLinks.push(a);
+      }
     });
 
     if (artistLinks.length > 0) {
       artist = artistLinks.map(a => a.textContent.trim()).filter(Boolean).join(', ');
     }
-
-    // Album links typically contain "browse/MPREb" or "browse/OLAK5uy" or "playlist?list=OLAK5uy"
-    const albumLinks = Array.from(item.querySelectorAll('.secondary-flex-columns a, .flex-columns a, a')).filter(a => {
-      const href = a.getAttribute('href') || '';
-      return href.includes('browse/MPREb') || href.includes('browse/OLAK5uy') || 
-             href.includes('playlist?list=OLAK5uy') || href.includes('playlist?list=MPREb');
-    });
 
     if (albumLinks.length > 0) {
       const linkText = albumLinks[0].textContent.trim();
@@ -337,30 +354,24 @@
       }
     }
 
-    // 3. Fallback: Parse secondary flex columns / formatted strings
-    const secCols = Array.from(item.querySelectorAll('.secondary-flex-columns, yt-formatted-string.subtitle, .subtitle, .byline'));
+    // In YouTube Music bylines, link 0 is Artist, link 1 is Album
+    if (!artist && secLinks.length > 0 && !albumLinks.includes(secLinks[0])) {
+      artist = secLinks[0].textContent.trim();
+    }
+    if (!album && !isSingle && secLinks.length > 1 && !artistLinks.includes(secLinks[1])) {
+      const cand = secLinks[1].textContent.trim();
+      if (!/^single(\s*-\s*ep)?$/i.test(cand) && !/^ep$/i.test(cand) && !/^\d+:\d+$/.test(cand) && !/^\d{4}$/.test(cand)) {
+        album = cand;
+      }
+    }
 
+    // 3. Fallback: Parse secondary formatted text (split by bullet points)
     if (!artist || !album) {
-      if (secCols.length >= 2) {
-        // Desktop multi-column layout (col 0 = artist, col 1 = album)
-        if (!artist && secCols[0]) {
-          artist = secCols[0].textContent.trim();
-        }
-        if (!album && !isSingle && secCols[1]) {
-          const colText = secCols[1].textContent.trim();
-          if (/^single(\s*-\s*ep)?$/i.test(colText) || /^ep$/i.test(colText)) {
-            isSingle = true;
-          } else if (!/^\d+:\d+(:\d+)?$/.test(colText) && !/^\d{4}$/.test(colText) && !/views?|plays?|listening/i.test(colText)) {
-            album = colText;
-          }
-        }
-      } else if (secCols.length === 1 && secCols[0].textContent) {
-        // Single column with bullets (e.g. "Artist • Album • 3:45" or "Artist • Single • 2024")
-        const parts = secCols[0].textContent.split('•').map(p => p.trim()).filter(Boolean);
-        parts.forEach(p => {
-          if (/^single(\s*-\s*ep)?$/i.test(p) || /^ep$/i.test(p)) isSingle = true;
-        });
+      const subtitleElem = item.querySelector('.secondary-flex-columns yt-formatted-string, yt-formatted-string.subtitle, .subtitle, .byline');
+      const subtitleText = subtitleElem ? subtitleElem.textContent.trim() : '';
 
+      if (subtitleText) {
+        const parts = subtitleText.split('•').map(p => p.trim()).filter(Boolean);
         const textParts = parts.filter(p => 
           !/^\d+:\d+(:\d+)?$/.test(p) && 
           !/^\d{4}$/.test(p) &&
@@ -378,23 +389,19 @@
       }
     }
 
-    // 4. Fallback: Check any formatted string in item if artist is still missing
-    if (!artist) {
-      const allFormatted = Array.from(item.querySelectorAll('yt-formatted-string')).filter(el => el !== titleElem);
-      if (allFormatted.length > 0) {
-        const firstText = allFormatted[0].textContent.trim();
-        if (firstText && !/^\d+:\d+$/.test(firstText)) {
-          const parts = firstText.split('•').map(p => p.trim()).filter(Boolean);
-          if (parts[0]) artist = parts[0];
-          if (!album && !isSingle && parts[1] && !/^\d+:\d+$/.test(parts[1]) && !/^single/i.test(parts[1])) {
-            album = parts[1];
-          }
-        }
+    // 4. Sanitize extracted values
+    if (artist && artist.includes('•')) {
+      const sub = artist.split('•').map(p => p.trim()).filter(Boolean);
+      artist = sub[0] || '';
+      if (!album && sub[1] && !/^\d+:\d+$/.test(sub[1])) {
+        album = sub[1];
       }
     }
 
-    // 5. Clean up album name: discard if it's duration, pure year, view count, or "single"
     if (album) {
+      if (album.includes('•')) {
+        album = album.split('•')[0].trim();
+      }
       if (/^\d+:\d+(:\d+)?$/.test(album) || 
           /^\d{4}$/.test(album) || 
           /^\d+(\.\d+)?[KM]?\s*(plays?|views?)/i.test(album) ||
@@ -403,6 +410,12 @@
         if (/^single/i.test(album)) isSingle = true;
         album = '';
       }
+    }
+
+    // Avoid artist and album being identical
+    if (artist && album && artist.toLowerCase() === album.toLowerCase()) {
+      album = '';
+      isSingle = true;
     }
 
     let videoId = '';

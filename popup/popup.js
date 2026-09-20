@@ -101,23 +101,30 @@ function renderStats(stats) {
   renderAlbumsList(stats.topAlbums || []);
 }
 
+function cleanArtist(artist) {
+  if (!artist) return '';
+  return String(artist).split('•')[0].trim();
+}
+
 function renderSongsList(items) {
   if (!elements.topSongsList) return;
-  if (items.length === 0) {
+  const top3 = (items || []).slice(0, 3);
+  if (top3.length === 0) {
     elements.topSongsList.innerHTML = '<li class="empty-state">No songs tracked yet.</li>';
     return;
   }
 
   elements.topSongsList.innerHTML = '';
-  items.forEach((song, idx) => {
+  top3.forEach((song, idx) => {
     const li = document.createElement('li');
     li.className = 'ranked-item';
+    const displayArtist = cleanArtist(song.artist);
     li.innerHTML = `
       <div class="ranked-left">
         <span class="rank-index">#${idx + 1}</span>
         <div class="rank-text">
           <div class="rank-name" title="${escapeHtml(song.title)}">${escapeHtml(song.title)}</div>
-          <span class="rank-sub" title="${escapeHtml(song.artist)}">${escapeHtml(song.artist)}</span>
+          ${displayArtist ? `<span class="rank-sub" title="${escapeHtml(displayArtist)}">${escapeHtml(displayArtist)}</span>` : ''}
         </div>
       </div>
       <span class="rank-count">${song.playCount} ${song.playCount === 1 ? 'play' : 'plays'}</span>
@@ -128,20 +135,22 @@ function renderSongsList(items) {
 
 function renderArtistsList(items) {
   if (!elements.topArtistsList) return;
-  if (items.length === 0) {
+  const top3 = (items || []).slice(0, 3);
+  if (top3.length === 0) {
     elements.topArtistsList.innerHTML = '<li class="empty-state">No artists tracked yet.</li>';
     return;
   }
 
   elements.topArtistsList.innerHTML = '';
-  items.forEach((artist, idx) => {
+  top3.forEach((artist, idx) => {
     const li = document.createElement('li');
     li.className = 'ranked-item';
+    const displayArtist = cleanArtist(artist.artist);
     li.innerHTML = `
       <div class="ranked-left">
         <span class="rank-index">#${idx + 1}</span>
         <div class="rank-text">
-          <div class="rank-name" title="${escapeHtml(artist.artist)}">${escapeHtml(artist.artist)}</div>
+          <div class="rank-name" title="${escapeHtml(displayArtist)}">${escapeHtml(displayArtist)}</div>
         </div>
       </div>
       <span class="rank-count">${artist.playCount} ${artist.playCount === 1 ? 'play' : 'plays'}</span>
@@ -152,13 +161,14 @@ function renderArtistsList(items) {
 
 function renderAlbumsList(items) {
   if (!elements.topAlbumsList) return;
-  if (items.length === 0) {
+  const top3 = (items || []).slice(0, 3);
+  if (top3.length === 0) {
     elements.topAlbumsList.innerHTML = '<li class="empty-state">No albums tracked yet.</li>';
     return;
   }
 
   elements.topAlbumsList.innerHTML = '';
-  items.forEach((album, idx) => {
+  top3.forEach((album, idx) => {
     const li = document.createElement('li');
     li.className = 'ranked-item';
     const uniqueTracks = album.uniqueTracksCount || (album.tracksListened ? Object.keys(album.tracksListened).length : 1);
@@ -169,12 +179,15 @@ function renderAlbumsList(items) {
       playsLabel = `${uniqueTracks} ${uniqueTracks === 1 ? 'song' : 'songs'} • ${album.playCount} ${album.playCount === 1 ? 'play' : 'plays'}`;
     }
 
+    const cleanArtistName = cleanArtist(album.artist);
+    const hasDistinctArtist = cleanArtistName && cleanArtistName.toLowerCase() !== (album.album || '').toLowerCase();
+
     li.innerHTML = `
       <div class="ranked-left">
         <span class="rank-index">#${idx + 1}</span>
         <div class="rank-text">
           <div class="rank-name" title="${escapeHtml(album.album)}">${escapeHtml(album.album)}</div>
-          <span class="rank-sub" title="${escapeHtml(album.artist)}">${escapeHtml(album.artist)}</span>
+          ${hasDistinctArtist ? `<span class="rank-sub" title="${escapeHtml(cleanArtistName)}">${escapeHtml(cleanArtistName)}</span>` : ''}
         </div>
       </div>
       <span class="rank-count">${playsLabel}</span>

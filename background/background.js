@@ -33,23 +33,234 @@ function cleanAlbumsDict(albums) {
   return cleaned;
 }
 
-// Initialize default storage schema
-async function initializeStorage() {
-  try {
-    const data = await extBrowser.storage.local.get(['totalPlays', 'songs', 'artists', 'albums']);
-    const updates = {};
-    if (typeof data.totalPlays === 'undefined') updates.totalPlays = 0;
-    if (!data.songs || typeof data.songs !== 'object') updates.songs = {};
-    if (!data.artists || typeof data.artists !== 'object') updates.artists = {};
-    if (!data.albums || typeof data.albums !== 'object') {
-      updates.albums = {};
-    } else {
-      const cleaned = cleanAlbumsDict(data.albums);
-      if (Object.keys(cleaned).length !== Object.keys(data.albums).length) {
-        updates.albums = cleaned;
+// In-memory cache for compiled statistics
+let statsCache = null;
+
+function invalidateStatsCache() {
+  statsCache = null;
+}
+
+if (extBrowser.storage && extBrowser.storage.onChanged) {
+  extBrowser.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === 'local') {
+      const keys = ['songs', 'artists', 'albums', 'totalPlays', 'currentTrack'];
+      if (keys.some(k => k in changes)) {
+        invalidateStatsCache();
       }
     }
+  });
+}
+
+// Helper to normalize and sanitize track metadata
+function normalizeTrack(rawTrack) {
+  if (!rawTrack) return null;
+  let title = (rawTrack.title || '').trim();
+  let artist = (rawTrack.artist || '').trim();
+  let album = (rawTrack.album || '').trim();
+  let isSingle = Boolean(rawTrack.isSingle);
+
+  // If artist contains bullet "•" (e.g. "Artist • Album")
+  if (artist.includes('•')) {
+    const parts = artist.split('•').map(p => p.trim()).filter(Boolean);
+    artist = parts[0] || 'Unknown Artist';
+    if (!album && parts[1] && !/^\d+:\d+$/.test(parts[1]) && !/^\d{4}$/.test(parts[1]) && !/^single/i.test(parts[1])) {
+      album = parts[1];
+    }
+  }
+
+  // If album contains bullet "•"
+  if (album.includes('•')) {
+    const parts = album.split('•').map(p => p.trim()).filter(Boolean);
+    album = parts[0] || '';
+  }
+
+  // Discard album if single, ep, or duration/year
+  if (album && (/^single(\s*-\s*ep)?$/i.test(album) || /^ep$/i.test(album) || /^\d+:\d+(:\d+)?$/.test(album) || /^\d{4}$/.test(album))) {
+    isSingle = true;
+    album = '';
+  }
+
+  // If album and artist are identical, it's not a real album
+  if (album && artist && album.toLowerCase() === artist.toLowerCase()) {
+    album = '';
+    isSingle = true;
+  }
+
+  return {
+    ...rawTrack,
+    title,
+    artist: artist || 'Unknown Artist',
+    album,
+    isSingle: isSingle || !album
+  };
+}
+
+// Self-healing data sanitizer to fix any corrupted artist/album metadata
+function sanitizeStorageData(data) {
+  let modified = false;
+  const rawSongs = data.songs || {};
+  const rawAlbums = data.albums || {};
+  const cleanSongs = {};
+  const cleanAlbums = {};
+
+  // 1. Sanitize songs
+  for (const [key, song] of Object.entries(rawSongs)) {
+    if (!song || !song.title) continue;
+    let title = song.title.trim();
+    let artist = (song.artist || '').trim();
+    let album = (song.album || '').trim();
+    let isSingle = Boolean(song.isSingle);
+
+    if (artist.includes('•')) {
+      const parts = artist.split('•').map(p => p.trim()).filter(Boolean);
+      artist = parts[0] || 'Unknown Artist';
+      if (!album && parts[1] && !/^\d+:\d+$/.test(parts[1]) && !/^\d{4}$/.test(parts[1]) && !/^single/i.test(parts[1])) {
+        album = parts[1];
+      }
+      modified = true;
+    }
+
+    if (album.includes('•')) {
+      const parts = album.split('•').map(p => p.trim()).filter(Boolean);
+      album = parts[0] || '';
+      modified = true;
+    }
+
+    if (album && (/^single(\s*-\s*ep)?$/i.test(album) || /^ep$/i.test(album) || /^\d+:\d+(:\d+)?$/.test(album) || /^\d{4}$/.test(album))) {
+      isSingle = true;
+      album = '';
+      modified = true;
+    }
+
+    if (album && artist && album.toLowerCase() === artist.toLowerCase()) {
+      album = '';
+      isSingle = true;
+      modified = true;
+    }
+
+    const cleanKey = makeSongKey(title, artist);
+    if (cleanKey !== key) modified = true;
+
+    if (!cleanSongs[cleanKey]) {
+      cleanSongs[cleanKey] = {
+        ...song,
+        title,
+        artist: artist || 'Unknown Artist',
+        album,
+        isSingle: isSingle || !album
+      };
+    } else {
+      cleanSongs[cleanKey].playCount = (cleanSongs[cleanKey].playCount || 0) + (song.playCount || 1);
+      if (album && !cleanSongs[cleanKey].album) cleanSongs[cleanKey].album = album;
+      modified = true;
+    }
+  }
+
+  // 2. Sanitize albums
+  for (const [key, alb] of Object.entries(rawAlbums)) {
+    if (!alb || !alb.album) continue;
+    let albumName = alb.album.trim();
+    let albumArtist = (alb.artist || '').trim();
+
+    if (albumArtist.includes('•')) {
+      albumArtist = albumArtist.split('•')[0].trim();
+      modified = true;
+    }
+
+    // If albumArtist is identical to albumName, recover true artist from cleanSongs
+    if (!albumArtist || albumArtist.toLowerCase() === albumName.toLowerCase()) {
+      const listenedKeys = Object.keys(alb.tracksListened || {});
+      let matchedArtist = '';
+      for (const tTitle of listenedKeys) {
+        const matchingSong = Object.values(cleanSongs).find(s => s.title.toLowerCase() === tTitle.toLowerCase());
+        if (matchingSong && matchingSong.artist && matchingSong.artist.toLowerCase() !== albumName.toLowerCase()) {
+          matchedArtist = matchingSong.artist;
+          break;
+        }
+      }
+      if (!matchedArtist) {
+        const songWithAlbum = Object.values(cleanSongs).find(s => s.album && s.album.toLowerCase() === albumName.toLowerCase());
+        if (songWithAlbum && songWithAlbum.artist && songWithAlbum.artist.toLowerCase() !== albumName.toLowerCase()) {
+          matchedArtist = songWithAlbum.artist;
+        }
+      }
+
+      if (matchedArtist) {
+        albumArtist = matchedArtist;
+        modified = true;
+      }
+    }
+
+    const lowerAlb = albumName.toLowerCase();
+    if (lowerAlb === 'single' || lowerAlb === 'single - ep' || lowerAlb === 'ep' || /^\d+:\d+$/.test(albumName) || /^\d{4}$/.test(albumName)) {
+      modified = true;
+      continue;
+    }
+
+    // Discard album if artist is still identical to album name
+    if (albumArtist && albumArtist.toLowerCase() === albumName.toLowerCase()) {
+      modified = true;
+      continue;
+    }
+
+    const cleanAlbKey = makeAlbumKey(albumName, albumArtist);
+    if (cleanAlbKey !== key) modified = true;
+
+    if (!cleanAlbums[cleanAlbKey]) {
+      cleanAlbums[cleanAlbKey] = {
+        ...alb,
+        album: albumName,
+        artist: albumArtist || 'Unknown Artist'
+      };
+    } else {
+      cleanAlbums[cleanAlbKey].playCount = (cleanAlbums[cleanAlbKey].playCount || 0) + (alb.playCount || 1);
+      cleanAlbums[cleanAlbKey].completePlays = (cleanAlbums[cleanAlbKey].completePlays || 0) + (alb.completePlays || 0);
+      modified = true;
+    }
+  }
+
+  // 3. Rebuild artists dictionary purely from cleanSongs
+  const cleanArtists = {};
+  for (const song of Object.values(cleanSongs)) {
+    if (!song.artist || song.artist === 'Unknown Artist') continue;
+    const artistList = song.artist.split(/[,&/]| feat\.? | ft\.? /i).map(a => a.trim()).filter(Boolean);
+    artistList.forEach(rawName => {
+      const aKey = makeArtistKey(rawName);
+      if (!cleanArtists[aKey]) {
+        cleanArtists[aKey] = { artist: rawName, playCount: song.playCount || 1 };
+      } else {
+        cleanArtists[aKey].playCount += (song.playCount || 1);
+      }
+    });
+  }
+
+  const oldArtistCount = Object.keys(data.artists || {}).length;
+  const newArtistCount = Object.keys(cleanArtists).length;
+  if (oldArtistCount !== newArtistCount) modified = true;
+
+  return {
+    modified,
+    songs: cleanSongs,
+    artists: cleanArtists,
+    albums: cleanAlbums
+  };
+}
+
+// Initialize default storage schema & heal corrupted entries
+async function initializeStorage() {
+  try {
+    const data = await extBrowser.storage.local.get(['totalPlays', 'songs', 'artists', 'albums', 'historySyncState']);
+    const sanitized = sanitizeStorageData(data);
+    const updates = {};
+    if (typeof data.totalPlays === 'undefined') updates.totalPlays = 0;
     if (typeof data.historySyncState === 'undefined') updates.historySyncState = null;
+
+    if (sanitized.modified || !data.songs || !data.artists || !data.albums) {
+      updates.songs = sanitized.songs;
+      updates.artists = sanitized.artists;
+      updates.albums = sanitized.albums;
+      invalidateStatsCache();
+    }
 
     // Remove legacy 'history' if present from previous versions
     await extBrowser.storage.local.remove('history');
@@ -139,7 +350,8 @@ async function getSongCount(payload) {
 /**
  * Records a track play and updates song, artist, and total counters
  */
-async function handleTrackPlayed(track) {
+async function handleTrackPlayed(rawTrack) {
+  const track = normalizeTrack(rawTrack);
   if (!track || !track.title) return { totalPlays: 0, songPlays: 0 };
 
   const data = await extBrowser.storage.local.get(['totalPlays', 'songs', 'artists', 'albums']);
@@ -244,6 +456,8 @@ async function handleTrackPlayed(track) {
     historySyncState
   });
 
+  invalidateStatsCache();
+
   return {
     totalPlays,
     songPlays: songs[songKey].playCount,
@@ -256,7 +470,6 @@ async function handleTrackPlayed(track) {
  */
 async function handleAlbumCompleted(payload) {
   if (!payload || !payload.album) return { completePlays: 0 };
-
   const data = await extBrowser.storage.local.get(['albums']);
   const albums = cleanAlbumsDict(data.albums || {});
   const albumKey = makeAlbumKey(payload.album, payload.artist);
@@ -276,40 +489,55 @@ async function handleAlbumCompleted(payload) {
   }
 
   await extBrowser.storage.local.set({ albums });
+  invalidateStatsCache();
   console.log('[YTMusic Counter] Album completed:', payload.album, 'Total completions:', albums[albumKey].completePlays);
   return { completePlays: albums[albumKey].completePlays };
 }
 
 /**
- * Compiles aggregated statistics for popup display
+ * Compiles aggregated statistics with Top 3 rankings and caching
  */
 async function getStats() {
-  const data = await extBrowser.storage.local.get(['totalPlays', 'songs', 'artists', 'albums', 'currentTrack']);
-  const songs = data.songs || {};
-  const artists = data.artists || {};
-  const albums = cleanAlbumsDict(data.albums || {});
+  if (statsCache) {
+    return statsCache;
+  }
 
-  // Sort top items for each category
+  const data = await extBrowser.storage.local.get(['totalPlays', 'songs', 'artists', 'albums', 'currentTrack']);
+  const sanitized = sanitizeStorageData(data);
+  const songs = sanitized.songs;
+  const artists = sanitized.artists;
+  const albums = cleanAlbumsDict(sanitized.albums);
+
+  if (sanitized.modified) {
+    extBrowser.storage.local.set({
+      songs: sanitized.songs,
+      artists: sanitized.artists,
+      albums: sanitized.albums
+    }).catch(() => {});
+  }
+
+  // Sort top items for each category (Top 3)
   const topSongs = Object.values(songs)
     .sort((a, b) => b.playCount - a.playCount)
-    .slice(0, 25);
+    .slice(0, 3);
 
   const topArtists = Object.values(artists)
     .sort((a, b) => b.playCount - a.playCount)
-    .slice(0, 25);
+    .slice(0, 3);
 
-  const topAlbums = Object.values(albums)
+  const sortedAlbums = Object.values(albums)
     .sort((a, b) => {
       const aScore = (a.completePlays || 0) * 100 + (a.playCount || 0);
       const bScore = (b.completePlays || 0) * 100 + (b.playCount || 0);
       return bScore - aScore;
-    })
-    .slice(0, 50);
+    });
+
+  const topAlbums = sortedAlbums.slice(0, 3);
 
   const singlesCount = Object.values(songs).filter(s => s.isSingle || !s.album).length;
   const completedAlbumsCount = Object.values(albums).reduce((sum, a) => sum + (a.completePlays || 0), 0);
 
-  return {
+  statsCache = {
     totalPlays: data.totalPlays || 0,
     currentTrack: data.currentTrack || null,
     uniqueSongsCount: Object.keys(songs).length,
@@ -319,8 +547,11 @@ async function getStats() {
     completedAlbumsCount,
     topSongs,
     topArtists,
-    topAlbums
+    topAlbums,
+    allAlbums: sortedAlbums
   };
+
+  return statsCache;
 }
 
 /**
@@ -338,6 +569,7 @@ async function resetStats() {
   };
   await extBrowser.storage.local.clear();
   await extBrowser.storage.local.set(emptyState);
+  invalidateStatsCache();
   return emptyState;
 }
 
@@ -358,7 +590,8 @@ async function handleImportHistory(payload) {
 
   let newPlaysCount = 0;
 
-  for (const track of tracks) {
+  for (const rawTrack of tracks) {
+    const track = normalizeTrack(rawTrack);
     if (!track || !track.title) continue;
 
     totalPlays += 1;
@@ -439,6 +672,7 @@ async function handleImportHistory(payload) {
   }
 
   await extBrowser.storage.local.set(storageUpdates);
+  invalidateStatsCache();
 
   const singlesCount = Object.values(songs).filter(s => s.isSingle || !s.album).length;
 
@@ -476,6 +710,7 @@ async function handleGetAlbumDetails(payload) {
         }
         albums[albumKey] = album;
         await extBrowser.storage.local.set({ albums });
+        invalidateStatsCache();
       }
     } catch (_) {}
   }
