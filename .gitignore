@@ -31,3 +31,6 @@ ehthumbs_vista.db
 tmp/
 temp/
 scratch/
+
+# Local documentation & wiki
+.wiki/
