@@ -479,15 +479,16 @@ function renderScanProgress(scanProgress) {
         elements.scannerImportingTrack.textContent = scanProgress.statusText || 'Finding songs in history...';
       }
     }
-  } else if (scanProgress.statusText && scanProgress.count > 0) {
+  } else if (scanProgress.statusText) {
     elements.scannerLivePanel.style.display = 'flex';
     if (elements.scannerConfigSpinner) elements.scannerConfigSpinner.classList.add('done');
     if (elements.scannerLiveBadge) {
-      elements.scannerLiveBadge.textContent = 'Completed';
+      elements.scannerLiveBadge.textContent = scanProgress.count === 0 ? 'Up to Date' : 'Completed';
       elements.scannerLiveBadge.classList.add('badge-done');
     }
     if (elements.scannerLiveCounts) {
-      elements.scannerLiveCounts.textContent = `${scanProgress.count} plays synced`;
+      const plays = scanProgress.count || 0;
+      elements.scannerLiveCounts.textContent = plays === 1 ? '1 play synced' : `${plays} plays synced`;
     }
     if (elements.scannerImportingTrack) {
       elements.scannerImportingTrack.textContent = scanProgress.statusText;
@@ -508,19 +509,40 @@ async function checkScanProgress() {
   }
 }
 
+function formatRelativeTime(timestamp) {
+  if (!timestamp) return 'recently';
+  const diffSec = Math.floor((Date.now() - timestamp) / 1000);
+  if (diffSec < 60) return 'just now';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHours = Math.floor(diffMin / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays}d ago`;
+}
+
 function renderHistorySyncStatus(syncState) {
   if (!elements.historySyncText) return;
 
-  if (!syncState || !syncState.lastDateHeader) {
+  const hasWatermark = syncState && Array.isArray(syncState.watermark) && syncState.watermark.length > 0;
+  const hasLegacy = syncState && syncState.lastDateHeader;
+
+  if (!syncState || (!hasWatermark && !hasLegacy && !syncState.lastSyncTimestamp)) {
     elements.historySyncText.textContent = 'Sync Status: Ready for first sync';
     if (elements.historySyncDot) elements.historySyncDot.classList.remove('active');
     if (elements.debugSyncBoundaryStatus) elements.debugSyncBoundaryStatus.textContent = 'Boundary: None';
-  } else {
-    elements.historySyncText.textContent = `Sync Status: Last synced up to ${syncState.lastDateHeader} (${syncState.syncedCountOnDate} songs)`;
-    if (elements.historySyncDot) elements.historySyncDot.classList.add('active');
-    if (elements.debugSyncBoundaryStatus) {
-      elements.debugSyncBoundaryStatus.textContent = `Boundary: "${syncState.lastDateHeader}" (${syncState.syncedCountOnDate} plays)`;
-    }
+    return;
+  }
+
+  const latestTitle = syncState.lastTrackTitle || (hasWatermark ? syncState.watermark[0].title : syncState.lastDateHeader);
+  const timeStr = syncState.lastSyncTimestamp ? formatRelativeTime(syncState.lastSyncTimestamp) : 'recently';
+
+  elements.historySyncText.textContent = `Sync Status: Synced ${timeStr} (Latest: "${latestTitle}")`;
+  if (elements.historySyncDot) elements.historySyncDot.classList.add('active');
+  if (elements.debugSyncBoundaryStatus) {
+    elements.debugSyncBoundaryStatus.textContent = hasWatermark
+      ? `Watermark: ${syncState.watermark.length} tracks (Top: "${latestTitle}")`
+      : `Boundary: "${syncState.lastDateHeader}" (${syncState.syncedCountOnDate || 0} plays)`;
   }
 }
 

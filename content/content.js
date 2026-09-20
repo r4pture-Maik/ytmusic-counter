@@ -80,7 +80,19 @@
       }
     }
 
-    return { title, artist, album, albumBrowseId, isSingle };
+    let videoId = '';
+    const videoLink = document.querySelector('ytmusic-player-bar .image-link, ytmusic-player-bar a.yt-simple-endpoint[href*="watch?v="]');
+    if (videoLink) {
+      const href = videoLink.getAttribute('href') || '';
+      const match = href.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+      if (match) videoId = match[1];
+    }
+    if (!videoId && window.location.search.includes('v=')) {
+      const match = window.location.search.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+      if (match) videoId = match[1];
+    }
+
+    return { title, artist, album, albumBrowseId, isSingle, videoId };
   }
 
   /**
@@ -393,13 +405,90 @@
       }
     }
 
+    let videoId = '';
+    const videoLink = item.querySelector('a[href*="watch?v="]');
+    if (videoLink) {
+      const href = videoLink.getAttribute('href') || '';
+      const match = href.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+      if (match) videoId = match[1];
+    }
+
     return {
       title,
       artist: artist || 'Unknown Artist',
       album: album || '',
       albumBrowseId: albumBrowseId || '',
-      isSingle: Boolean(isSingle)
+      isSingle: Boolean(isSingle),
+      videoId
     };
+  }
+
+  /**
+   * Normalizes strings for robust track comparison
+   */
+  function normalizeTrackStr(str) {
+    return (str || '')
+      .toLowerCase()
+      .trim()
+      .replace(/[^\w\s]/g, '')
+      .replace(/\s+/g, ' ');
+  }
+
+  /**
+   * Compares two tracks for equality
+   */
+  function areTracksEqual(a, b) {
+    if (!a || !b) return false;
+    if (a.videoId && b.videoId && a.videoId === b.videoId) {
+      return true;
+    }
+    const aTitle = normalizeTrackStr(a.title);
+    const bTitle = normalizeTrackStr(b.title);
+    if (!aTitle || !bTitle || aTitle !== bTitle) {
+      return false;
+    }
+    const aArtist = normalizeTrackStr(a.artist);
+    const bArtist = normalizeTrackStr(b.artist);
+    if (aArtist && bArtist && aArtist !== 'unknown artist' && bArtist !== 'unknown artist') {
+      return aArtist === bArtist || aArtist.includes(bArtist) || bArtist.includes(aArtist);
+    }
+    return true;
+  }
+
+  /**
+   * Finds the index in parsedItems where the watermark sequence begins
+   */
+  function findWatermarkBoundary(parsedItems, watermark) {
+    if (!Array.isArray(watermark) || watermark.length === 0) return -1;
+    if (!Array.isArray(parsedItems) || parsedItems.length === 0) return -1;
+
+    for (let i = 0; i < parsedItems.length; i++) {
+      if (areTracksEqual(parsedItems[i].track, watermark[0])) {
+        let matches = 1;
+        const maxCheck = Math.min(watermark.length, 5);
+        let sequenceValid = true;
+
+        for (let w = 1; w < maxCheck; w++) {
+          if (i + w < parsedItems.length) {
+            if (areTracksEqual(parsedItems[i + w].track, watermark[w])) {
+              matches++;
+            } else {
+              sequenceValid = false;
+              break;
+            }
+          } else {
+            break;
+          }
+        }
+
+        const requiredMatches = Math.min(2, watermark.length);
+        if (sequenceValid && matches >= requiredMatches) {
+          return i;
+        }
+      }
+    }
+
+    return -1;
   }
 
   function injectHistoryScannerOverlay() {
@@ -419,19 +508,14 @@
           <span class="ytmc-scanner-title">Listening History Sync</span>
         </div>
         <div class="ytmc-scanner-controls">
-          <button type="button" class="ytmc-btn-mini" id="ytmc-minimize-btn" title="Minimize">—</button>
-          <button type="button" class="ytmc-btn-mini" id="ytmc-close-btn" title="Close">✕</button>
+          <button type="button" class="ytmc-btn-mini" id="ytmc-close-btn" title="Minimize window">✕</button>
         </div>
       </div>
       <div class="ytmc-scanner-body">
         <div class="ytmc-scanner-metrics">
           <div class="ytmc-metric-card">
-            <span class="ytmc-metric-label">Plays Found</span>
+            <span class="ytmc-metric-label">New Songs Synced</span>
             <span class="ytmc-metric-val" id="ytmc-scan-count">0</span>
-          </div>
-          <div class="ytmc-metric-card">
-            <span class="ytmc-metric-label">Different Songs</span>
-            <span class="ytmc-metric-val" id="ytmc-scan-unique">0</span>
           </div>
         </div>
         <div class="ytmc-scanner-status-box">
@@ -446,9 +530,6 @@
           <button type="button" class="ytmc-btn-scan-start" id="ytmc-start-scan-btn">
             <span>▶ Start Sync</span>
           </button>
-          <button type="button" class="ytmc-btn-scan-stop" id="ytmc-stop-scan-btn" disabled>
-            <span>⏹ Stop &amp; Save</span>
-          </button>
         </div>
       </div>
     `;
@@ -456,23 +537,32 @@
     document.body.appendChild(overlay);
 
     const startBtn = overlay.querySelector('#ytmc-start-scan-btn');
-    const stopBtn = overlay.querySelector('#ytmc-stop-scan-btn');
-    const minimizeBtn = overlay.querySelector('#ytmc-minimize-btn');
     const closeBtn = overlay.querySelector('#ytmc-close-btn');
 
     startBtn.addEventListener('click', () => {
       const force = Boolean(overlay.querySelector('#ytmc-force-rescan-cb')?.checked);
       startHistoryScan(force);
     });
-    stopBtn.addEventListener('click', () => stopAndSaveHistory(false));
-    minimizeBtn.addEventListener('click', () => {
-      overlay.classList.toggle('ytmc-minimized');
-      minimizeBtn.textContent = overlay.classList.contains('ytmc-minimized') ? '◻' : '—';
-    });
+
     closeBtn.addEventListener('click', () => {
-      if (isScanning) stopAndSaveHistory(false);
-      overlay.remove();
+      overlay.classList.toggle('ytmc-minimized');
+      const isMin = overlay.classList.contains('ytmc-minimized');
+      closeBtn.textContent = isMin ? '◻' : '✕';
+      closeBtn.title = isMin ? 'Restore window' : 'Minimize window';
     });
+
+    const titleGroup = overlay.querySelector('.ytmc-scanner-title-group');
+    if (titleGroup) {
+      titleGroup.style.cursor = 'pointer';
+      titleGroup.title = 'Click to toggle minimize';
+      titleGroup.addEventListener('click', () => {
+        if (overlay.classList.contains('ytmc-minimized')) {
+          overlay.classList.remove('ytmc-minimized');
+          closeBtn.textContent = '✕';
+          closeBtn.title = 'Minimize window';
+        }
+      });
+    }
 
     if (window.location.search.includes('autostart=1')) {
       const force = window.location.search.includes('forceRescan=1');
@@ -485,8 +575,6 @@
     isScanning = true;
     idleScrollCount = 0;
     scannedTracks = [];
-    topSectionDate = null;
-    topSectionCount = 0;
 
     const isForce = forceRescan || window.location.search.includes('forceRescan=1');
     if (!isForce) {
@@ -500,19 +588,23 @@
       activeSyncState = null;
     }
 
-    console.log('[YTMC Content] Starting scan. Force rescan:', isForce, 'Active sync state:', activeSyncState);
+    const watermark = (!isForce && activeSyncState && Array.isArray(activeSyncState.watermark))
+      ? activeSyncState.watermark
+      : [];
+
+    console.log('[YTMC Content] Starting scan. Force rescan:', isForce, 'Watermark size:', watermark.length);
 
     const startBtn = document.getElementById('ytmc-start-scan-btn');
-    const stopBtn = document.getElementById('ytmc-stop-scan-btn');
     const spinner = document.getElementById('ytmc-scan-spinner');
     const note = document.getElementById('ytmc-scan-note');
+    const countEl = document.getElementById('ytmc-scan-count');
 
     if (startBtn) startBtn.disabled = true;
-    if (stopBtn) stopBtn.disabled = false;
     if (spinner) spinner.style.display = 'block';
+    if (countEl) countEl.textContent = '0';
     if (note) {
-      note.textContent = activeSyncState
-        ? `Checking for new plays since "${activeSyncState.lastDateHeader}"...`
+      note.textContent = watermark.length > 0
+        ? `Checking for new plays since "${watermark[0].title}"...`
         : 'Scanning your listening history...';
     }
 
@@ -523,169 +615,217 @@
         count: 0,
         unique: 0,
         latestTrack: null,
-        statusText: activeSyncState ? 'Checking for new plays...' : 'Finding plays in history...'
+        statusText: watermark.length > 0 ? 'Checking for new plays...' : 'Finding plays in history...'
       }
     });
 
-    scanInterval = setInterval(() => {
-      let newlyFound = 0;
-      let latestExtracted = null;
-      let reachedBoundary = false;
+    scanInterval = setInterval(async () => {
+      const itemElements = Array.from(document.querySelectorAll('ytmusic-responsive-list-item-renderer'));
+      if (itemElements.length === 0) {
+        return;
+      }
 
-      // Section-aware extraction (handles looping identical songs or multiple identical plays)
-      const sections = document.querySelectorAll('ytmusic-item-section-renderer, ytmusic-shelf-renderer');
+      const parsedItems = [];
+      for (const el of itemElements) {
+        const track = parseTrackFromItem(el);
+        if (track && track.title) {
+          parsedItems.push({ element: el, track });
+        }
+      }
 
-      if (sections.length > 0) {
-        // Record the top section's date and its current item count in DOM
-        const firstSection = sections[0];
-        const firstHeader = firstSection.querySelector('#header yt-formatted-string, .header yt-formatted-string, #title, h2');
-        topSectionDate = firstHeader ? firstHeader.textContent.trim() : 'Today';
-        const firstItems = firstSection.querySelectorAll('ytmusic-responsive-list-item-renderer');
-        topSectionCount = firstItems.length;
+      if (parsedItems.length === 0) return;
 
-        for (const section of sections) {
-          const header = section.querySelector('#header yt-formatted-string, .header yt-formatted-string, #title, h2');
-          const sectionDate = (header ? header.textContent.trim() : '').toLowerCase();
-          const items = Array.from(section.querySelectorAll('ytmusic-responsive-list-item-renderer'));
+      const hasWatermark = watermark.length > 0;
 
-          // Check if this section matches the previously synced date
-          if (activeSyncState && activeSyncState.lastDateHeader && sectionDate === activeSyncState.lastDateHeader.toLowerCase()) {
-            const M = items.length;
-            const K = activeSyncState.syncedCountOnDate || 0;
-            const delta = M - K;
+      // Mode A: Watermark Sequence Matching (Incremental Sync)
+      if (hasWatermark) {
+        const boundaryIndex = findWatermarkBoundary(parsedItems, watermark);
 
-            console.log(`[YTMC Offset] Matched sync date "${activeSyncState.lastDateHeader}": M=${M}, K=${K}, delta=${delta}`);
+        if (boundaryIndex >= 0) {
+          const newTracks = parsedItems.slice(0, boundaryIndex).map(p => p.track);
+          console.log(`[YTMC Sync] Watermark boundary matched at index ${boundaryIndex}! New plays to import: ${newTracks.length}`);
+          stopAndSaveHistory(true, boundaryIndex === 0 ? 'Already up to date' : 'Sync complete', newTracks, parsedItems);
+          return;
+        }
 
-            if (delta > 0) {
-              // Take only the newest 'delta' items from the top of this section
-              for (let i = 0; i < delta; i++) {
-                const item = items[i];
-                if (item.dataset.ytmcProcessed) continue;
-                item.dataset.ytmcProcessed = 'true';
-                const track = parseTrackFromItem(item);
-                if (track) {
-                  scannedTracks.push(track);
-                  latestExtracted = track;
-                  newlyFound++;
+        // Boundary not found yet in currently loaded DOM items -> scroll to load more
+        console.log(`[YTMC Sync] Watermark not found yet in ${parsedItems.length} loaded items. Scrolling...`);
+        if (note) {
+          note.textContent = `Scanning history... Loaded ${parsedItems.length} songs. Looking for sync boundary...`;
+        }
+        extBrowser.storage.local.set({
+          scanProgress: {
+            isScanning: true,
+            count: parsedItems.length,
+            unique: new Set(parsedItems.map(p => `${p.track.title.toLowerCase()}:::${(p.track.artist || '').toLowerCase()}`)).size,
+            latestTrack: parsedItems[0].track,
+            statusText: `Loaded ${parsedItems.length} songs. Finding sync boundary...`
+          }
+        });
+      } else if (!isForce) {
+        // Fallback for existing users without an initialized watermark
+        try {
+          const localData = await extBrowser.storage.local.get(['currentTrack', 'songs', 'totalPlays']);
+          let fallbackBoundary = -1;
+
+          if (localData.currentTrack && localData.currentTrack.title) {
+            for (let idx = 0; idx < Math.min(parsedItems.length, 15); idx++) {
+              if (areTracksEqual(parsedItems[idx].track, localData.currentTrack)) {
+                fallbackBoundary = idx;
+                console.log(`[YTMC Sync] Fallback: Matched currentTrack at index ${idx}`);
+                break;
+              }
+            }
+          }
+
+          if (fallbackBoundary === -1 && localData.songs && Object.keys(localData.songs).length > 0) {
+            const songsDict = localData.songs;
+            for (let idx = 0; idx < Math.min(parsedItems.length, 15); idx++) {
+              const item = parsedItems[idx].track;
+              const key = `${(item.title || '').trim().toLowerCase()}:::${(item.artist || '').trim().toLowerCase()}`;
+              if (songsDict[key] && songsDict[key].playCount > 0) {
+                if (idx + 1 < parsedItems.length) {
+                  const nextItem = parsedItems[idx + 1].track;
+                  const nextKey = `${(nextItem.title || '').trim().toLowerCase()}:::${(nextItem.artist || '').trim().toLowerCase()}`;
+                  if (songsDict[nextKey] && songsDict[nextKey].playCount > 0) {
+                    fallbackBoundary = idx;
+                    console.log(`[YTMC Sync] Fallback: Matched existing songs cluster starting at index ${idx}`);
+                    break;
+                  }
+                } else {
+                  fallbackBoundary = idx;
+                  break;
                 }
               }
             }
-
-            // Boundary reached! Halting scan immediately.
-            reachedBoundary = true;
-            break;
-          } else {
-            // Unmatched / Newer section: process all items
-            items.forEach(item => {
-              if (item.dataset.ytmcProcessed) return;
-              item.dataset.ytmcProcessed = 'true';
-              const track = parseTrackFromItem(item);
-              if (track) {
-                scannedTracks.push(track);
-                latestExtracted = track;
-                newlyFound++;
-              }
-            });
           }
+
+          if (fallbackBoundary >= 0) {
+            const newTracks = parsedItems.slice(0, fallbackBoundary).map(p => p.track);
+            console.log(`[YTMC Sync] Fallback boundary resolved at index ${fallbackBoundary}. Importing ${newTracks.length} new tracks.`);
+            stopAndSaveHistory(true, fallbackBoundary === 0 ? 'Already up to date' : 'Sync complete', newTracks, parsedItems);
+            return;
+          }
+        } catch (e) {
+          console.warn('[YTMC Sync] Fallback check error:', e);
         }
-      } else {
-        // Flat list fallback if no section elements exist
-        const items = document.querySelectorAll('ytmusic-responsive-list-item-renderer');
-        items.forEach(item => {
-          if (item.dataset.ytmcProcessed) return;
-          item.dataset.ytmcProcessed = 'true';
-          const track = parseTrackFromItem(item);
-          if (track) {
-            scannedTracks.push(track);
-            latestExtracted = track;
-            newlyFound++;
+      }
+
+      // Mode B: Full Baseline Scan (First-time setup or Force Rescan)
+      if (!hasWatermark) {
+        for (const p of parsedItems) {
+          if (p.element.dataset.ytmcProcessed) continue;
+          p.element.dataset.ytmcProcessed = 'true';
+          scannedTracks.push(p.track);
+        }
+
+        const countEl = document.getElementById('ytmc-scan-count');
+        const uniqueCount = new Set(scannedTracks.map(t => `${t.title.toLowerCase()}:::${(t.artist || '').toLowerCase()}`)).size;
+        if (countEl) countEl.textContent = scannedTracks.length;
+
+        extBrowser.storage.local.set({
+          scanProgress: {
+            isScanning: true,
+            count: scannedTracks.length,
+            unique: uniqueCount,
+            latestTrack: scannedTracks[scannedTracks.length - 1],
+            statusText: `Importing history baseline (${scannedTracks.length}/${MAX_HISTORY_SCAN_ITEMS})...`
           }
         });
-      }
 
-      const uniqueSet = new Set(scannedTracks.map(t => `${t.title.toLowerCase()}:::${(t.artist || '').toLowerCase()}`));
-
-      const countEl = document.getElementById('ytmc-scan-count');
-      const uniqueEl = document.getElementById('ytmc-scan-unique');
-      if (countEl) countEl.textContent = scannedTracks.length;
-      if (uniqueEl) uniqueEl.textContent = uniqueSet.size;
-
-      // Broadcast progress to storage so Config page and popup see it in real time
-      extBrowser.storage.local.set({
-        scanProgress: {
-          isScanning: true,
-          count: scannedTracks.length,
-          unique: uniqueSet.size,
-          latestTrack: latestExtracted || (scannedTracks.length > 0 ? scannedTracks[scannedTracks.length - 1] : null),
-          statusText: reachedBoundary ? 'All caught up!' : 'Reading songs...'
+        if (scannedTracks.length >= MAX_HISTORY_SCAN_ITEMS) {
+          console.log(`[YTMC Content] Reached ${MAX_HISTORY_SCAN_ITEMS}-song history cap. Stopping.`);
+          stopAndSaveHistory(true, `Reached ${MAX_HISTORY_SCAN_ITEMS}-song limit`, scannedTracks, parsedItems);
+          return;
         }
-      });
-
-      // Cap at 200 items (YouTube Music history endpoint cap)
-      if (scannedTracks.length >= MAX_HISTORY_SCAN_ITEMS) {
-        console.log(`[YTMC Content] Reached ${MAX_HISTORY_SCAN_ITEMS}-song history cap. Stopping.`);
-        stopAndSaveHistory(true, `Reached ${MAX_HISTORY_SCAN_ITEMS}-song limit`);
-        return;
       }
 
-      if (reachedBoundary) {
-        console.log('[YTMC Offset] Date boundary reached! Stopping scan now.');
-        stopAndSaveHistory(true, 'All caught up');
-        return;
-      }
-
-      // Gentle, smooth scroll to load history without excessive jumping
-      window.scrollBy({ top: 1000, behavior: 'smooth' });
-      if (document.scrollingElement) document.scrollingElement.scrollTop += 1000;
+      // Smooth scroll down to load next items
+      const beforeCount = itemElements.length;
+      window.scrollBy({ top: 1200, behavior: 'smooth' });
+      if (document.scrollingElement) document.scrollingElement.scrollTop += 1200;
       document.querySelectorAll('ytmusic-app, #browse-page, ytmusic-browse-response, #contents, #main-panel').forEach(el => {
-        if (el.scrollHeight > el.clientHeight) el.scrollTop += 1000;
+        if (el.scrollHeight > el.clientHeight) el.scrollTop += 1200;
       });
-      const allRendered = document.querySelectorAll('ytmusic-responsive-list-item-renderer');
-      if (allRendered.length > 0) {
+      if (itemElements.length > 0) {
         try {
-          allRendered[allRendered.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
+          itemElements[itemElements.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
         } catch (_) {}
       }
 
-      console.log(`[YTMC Content] Scanned items. Newly found: ${newlyFound}, Total tracks: ${scannedTracks.length}, Unique: ${uniqueSet.size}`);
-
-      if (newlyFound === 0) {
+      const currentItemElements = document.querySelectorAll('ytmusic-responsive-list-item-renderer');
+      if (currentItemElements.length === beforeCount) {
         idleScrollCount++;
-        if (idleScrollCount >= 3) {
-          console.log('[YTMC Content] No new items after 3 scroll attempts. Stopping.');
-          stopAndSaveHistory(true, 'End of history reached');
+        if (idleScrollCount >= 4) {
+          console.log('[YTMC Content] End of history reached after 4 idle scroll checks.');
+          if (hasWatermark) {
+            const allTracks = parsedItems.map(p => p.track);
+            stopAndSaveHistory(true, 'Full history scanned', allTracks, parsedItems);
+          } else {
+            stopAndSaveHistory(true, 'End of history reached', scannedTracks, parsedItems);
+          }
           return;
         }
       } else {
         idleScrollCount = 0;
       }
-    }, 750);
+    }, 650);
   }
 
-  function stopAndSaveHistory(autoCompleted, reason = '') {
+  function stopAndSaveHistory(autoCompleted, reason = '', newTracks = null, allParsed = null) {
     if (!isScanning) return;
     isScanning = false;
     clearInterval(scanInterval);
     scanInterval = null;
 
     const startBtn = document.getElementById('ytmc-start-scan-btn');
-    const stopBtn = document.getElementById('ytmc-stop-scan-btn');
     const spinner = document.getElementById('ytmc-scan-spinner');
     const note = document.getElementById('ytmc-scan-note');
 
     if (startBtn) startBtn.disabled = false;
-    if (stopBtn) stopBtn.disabled = true;
     if (spinner) spinner.style.display = 'none';
 
-    // Build new sync state baseline
+    const tracksToImport = Array.isArray(newTracks) ? newTracks : scannedTracks;
+
+    // Construct fresh watermark from top of the page
+    let newWatermark = [];
+    if (Array.isArray(allParsed) && allParsed.length > 0) {
+      newWatermark = allParsed.slice(0, 50).map(p => ({
+        title: p.track.title,
+        artist: p.track.artist || 'Unknown Artist',
+        album: p.track.album || '',
+        videoId: p.track.videoId || ''
+      }));
+    } else if (tracksToImport.length > 0) {
+      newWatermark = tracksToImport.slice(0, 50).map(t => ({
+        title: t.title,
+        artist: t.artist || 'Unknown Artist',
+        album: t.album || '',
+        videoId: t.videoId || ''
+      }));
+    } else if (activeSyncState && Array.isArray(activeSyncState.watermark)) {
+      newWatermark = activeSyncState.watermark;
+    }
+
+    const topTrack = newWatermark.length > 0 ? newWatermark[0] : null;
+
     const newSyncState = {
-      lastDateHeader: topSectionDate || (activeSyncState && activeSyncState.lastDateHeader) || 'Today',
-      syncedCountOnDate: topSectionCount || (activeSyncState ? (activeSyncState.syncedCountOnDate + scannedTracks.length) : scannedTracks.length),
-      lastSyncTimestamp: Date.now()
+      watermark: newWatermark,
+      lastTrackTitle: topTrack ? topTrack.title : '',
+      lastTrackArtist: topTrack ? topTrack.artist : '',
+      lastSyncTimestamp: Date.now(),
+      lastSyncedCount: tracksToImport.length,
+      // Backward compatibility fields for legacy UI
+      lastDateHeader: topTrack ? topTrack.title : 'Synced',
+      syncedCountOnDate: tracksToImport.length
     };
 
-    if (scannedTracks.length === 0) {
-      const msg = activeSyncState ? 'No new plays found (already up to date).' : 'No tracks found in history.';
+    const countEl = document.getElementById('ytmc-scan-count');
+
+    if (tracksToImport.length === 0) {
+      if (countEl) countEl.textContent = '0';
+
+      const msg = activeSyncState ? 'All caught up! No new plays found.' : 'No tracks found in history.';
       if (note) note.textContent = msg;
       extBrowser.storage.local.set({
         scanProgress: {
@@ -700,38 +840,46 @@
       return;
     }
 
-    if (note) note.textContent = `Saving ${scannedTracks.length} plays...`;
+    const uniqueSet = new Set(tracksToImport.map(t => `${t.title.toLowerCase()}:::${(t.artist || '').toLowerCase()}`));
+    if (countEl) countEl.textContent = tracksToImport.length;
+
+    const countLabel = tracksToImport.length === 1 ? '1 play' : `${tracksToImport.length} plays`;
+    if (note) note.textContent = `Saving ${countLabel}...`;
 
     extBrowser.storage.local.set({
       scanProgress: {
         isScanning: true,
-        count: scannedTracks.length,
-        unique: new Set(scannedTracks.map(t => `${t.title.toLowerCase()}:::${(t.artist || '').toLowerCase()}`)).size,
-        latestTrack: scannedTracks[scannedTracks.length - 1],
-        statusText: `Saving ${scannedTracks.length} plays...`
+        count: tracksToImport.length,
+        unique: uniqueSet.size,
+        latestTrack: tracksToImport[0],
+        statusText: `Saving ${countLabel}...`
       }
     });
 
     extBrowser.runtime.sendMessage({
       type: 'IMPORT_HISTORY_TRACKS',
       payload: {
-        tracks: scannedTracks,
+        tracks: tracksToImport,
         newSyncState
       }
     }, (response) => {
       const res = response && response.data;
-      const importedCount = (res && res.importedCount) || scannedTracks.length;
+      const importedCount = (res && typeof res.importedCount === 'number') ? res.importedCount : tracksToImport.length;
+      const uniqueCount = (res && typeof res.uniqueSongs === 'number') ? res.uniqueSongs : uniqueSet.size;
+      const displayLabel = importedCount === 1 ? '1 new play' : `${importedCount} new plays`;
+
+      if (countEl) countEl.textContent = importedCount;
       if (note) {
-        note.innerHTML = `<b>Success!</b> Synced ${importedCount} plays (${reason || 'Completed'}).`;
+        note.innerHTML = `<b>Success!</b> Synced ${displayLabel} (${reason || 'Completed'}).`;
       }
 
       extBrowser.storage.local.set({
         scanProgress: {
           isScanning: false,
           count: importedCount,
-          unique: (res && res.uniqueSongs) || 0,
+          unique: uniqueCount,
           latestTrack: null,
-          statusText: `Done! Synced ${importedCount} plays (${reason || 'Completed'}).`
+          statusText: `Done! Synced ${displayLabel} (${reason || 'Completed'}).`
         },
         historySyncState: newSyncState
       });
@@ -807,6 +955,23 @@
       return true;
     }
   });
+
+  // Live sync with storage changes (e.g. after history sync or background play updates)
+  if (extBrowser.storage && extBrowser.storage.onChanged) {
+    extBrowser.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName === 'local' && changes.songs) {
+        const track = getCurrentTrackInfo();
+        if (track && track.title) {
+          const key = `${track.title.trim().toLowerCase()}:::${(track.artist || 'Unknown Artist').trim().toLowerCase()}`;
+          const updatedSongs = changes.songs.newValue || {};
+          if (updatedSongs[key] && typeof updatedSongs[key].playCount === 'number') {
+            currentSongPlays = updatedSongs[key].playCount;
+            updateSongBadge(currentSongPlays, true);
+          }
+        }
+      }
+    });
+  }
 
   function init() {
     const target = document.querySelector('ytmusic-player-bar') || document.body;

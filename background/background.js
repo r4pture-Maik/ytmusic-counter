@@ -215,12 +215,33 @@ async function handleTrackPlayed(track) {
     songPlays: songs[songKey].playCount
   };
 
+  // Prepend live play to watermark so subsequent history syncs do not double-count it
+  const syncData = await extBrowser.storage.local.get(['historySyncState']);
+  let historySyncState = syncData.historySyncState || {};
+  let currentWatermark = Array.isArray(historySyncState.watermark) ? historySyncState.watermark : [];
+
+  const liveEntry = {
+    title: track.title,
+    artist: track.artist || 'Unknown Artist',
+    album: albumName,
+    videoId: track.videoId || ''
+  };
+
+  historySyncState = {
+    ...historySyncState,
+    watermark: [liveEntry, ...currentWatermark.slice(0, 49)],
+    lastTrackTitle: track.title,
+    lastTrackArtist: track.artist || 'Unknown Artist',
+    lastSyncTimestamp: Date.now()
+  };
+
   await extBrowser.storage.local.set({
     totalPlays,
     songs,
     artists,
     albums,
-    currentTrack
+    currentTrack,
+    historySyncState
   });
 
   return {
