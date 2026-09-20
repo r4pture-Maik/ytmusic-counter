@@ -9,6 +9,7 @@ const elements = {
   totalPlays: document.getElementById('totalPlays'),
   uniqueSongs: document.getElementById('uniqueSongs'),
   uniqueArtists: document.getElementById('uniqueArtists'),
+  uniqueAlbums: document.getElementById('uniqueAlbums'),
   completedAlbums: document.getElementById('completedAlbums'),
 
   currentTrackTitle: document.getElementById('currentTrackTitle'),
@@ -75,6 +76,7 @@ function renderStats(stats) {
 
   if (elements.uniqueSongs) elements.uniqueSongs.textContent = stats.uniqueSongsCount || 0;
   if (elements.uniqueArtists) elements.uniqueArtists.textContent = stats.uniqueArtistsCount || 0;
+  if (elements.uniqueAlbums) elements.uniqueAlbums.textContent = stats.uniqueAlbumsCount || 0;
   if (elements.completedAlbums) elements.completedAlbums.textContent = stats.completedAlbumsCount || 0;
 
   // Now Playing Card
@@ -151,7 +153,7 @@ function renderArtistsList(items) {
 function renderAlbumsList(items) {
   if (!elements.topAlbumsList) return;
   if (items.length === 0) {
-    elements.topAlbumsList.innerHTML = '<li class="empty-state">No complete albums listened start-to-finish yet.</li>';
+    elements.topAlbumsList.innerHTML = '<li class="empty-state">No albums tracked yet.</li>';
     return;
   }
 
@@ -159,6 +161,14 @@ function renderAlbumsList(items) {
   items.forEach((album, idx) => {
     const li = document.createElement('li');
     li.className = 'ranked-item';
+    const uniqueTracks = album.uniqueTracksCount || (album.tracksListened ? Object.keys(album.tracksListened).length : 1);
+    let playsLabel = '';
+    if (album.completePlays > 0) {
+      playsLabel = `★ Full (${album.completePlays}x) • ${album.playCount} ${album.playCount === 1 ? 'play' : 'plays'}`;
+    } else {
+      playsLabel = `${uniqueTracks} ${uniqueTracks === 1 ? 'song' : 'songs'} • ${album.playCount} ${album.playCount === 1 ? 'play' : 'plays'}`;
+    }
+
     li.innerHTML = `
       <div class="ranked-left">
         <span class="rank-index">#${idx + 1}</span>
@@ -167,7 +177,7 @@ function renderAlbumsList(items) {
           <span class="rank-sub" title="${escapeHtml(album.artist)}">${escapeHtml(album.artist)}</span>
         </div>
       </div>
-      <span class="rank-count">${album.completePlays} full ${album.completePlays === 1 ? 'play' : 'plays'}</span>
+      <span class="rank-count">${playsLabel}</span>
     `;
     elements.topAlbumsList.appendChild(li);
   });

@@ -14,6 +14,7 @@ A lightweight, privacy-friendly Firefox WebExtension (Manifest V3) that tracks a
 3. **Optimized Storage**: Uses compact $O(1)$ dictionary key-value maps. Zero bloat, no unbounded chronological histories, and negligible memory footprint (< 400 KB even after years of continuous listening).
 4. **No Build Step Required**: Pure WebExtensions (Manifest V3) JavaScript, CSS, and HTML.
 5. **Full Details Page & Config**: Dedicated tab view with a "Totals Song Listened" hero row and a Config tab featuring a safe 3-step confirmation data wipe.
+6. **Automated History Scanner**: Scans `music.youtube.com/history` with auto-scrolling to extract past listening history and batch-import all tracks, plays, and artists into your extension stats.
 
 ---
 

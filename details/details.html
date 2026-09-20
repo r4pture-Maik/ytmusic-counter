@@ -108,7 +108,7 @@
           </div>
 
           <div class="card stat-card">
-            <div class="card-icon albums-icon">
+            <div class="card-icon tracked-albums-icon">
               <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
                 <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
                 <circle cx="12" cy="12" r="4"/>
@@ -117,12 +117,37 @@
               </svg>
             </div>
             <div class="card-info">
+              <span class="card-title">Tracked Albums</span>
+              <span class="card-value" id="trackedAlbumsStat">0</span>
+            </div>
+          </div>
+
+          <div class="card stat-card">
+            <div class="card-icon singles-icon">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </div>
+            <div class="card-info">
+              <span class="card-title">Singles Tracked</span>
+              <span class="card-value" id="singlesStat">0</span>
+            </div>
+          </div>
+
+          <div class="card stat-card">
+            <div class="card-icon completed-albums-icon">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
+              </svg>
+            </div>
+            <div class="card-info">
               <span class="card-title">Completed Full Albums</span>
               <span class="card-value" id="completedAlbumsStat">0</span>
             </div>
           </div>
 
-          <div class="card stat-card" id="nowPlayingCard">
+          <div class="card stat-card full-width-card" id="nowPlayingCard">
             <div class="card-icon now-playing-icon">
               <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
                 <polygon points="5,3 19,12 5,21"/>
@@ -133,6 +158,26 @@
               <span class="card-value-text" id="activeTrackTitle">No track currently active</span>
               <span class="card-subtext" id="activeTrackArtist">-</span>
             </div>
+          </div>
+        </div>
+
+        <!-- Albums & Track Breakdown Section -->
+        <div class="albums-breakdown-section">
+          <div class="section-header-bar">
+            <div class="section-title-group">
+              <h3>Tracked Albums &amp; Completion</h3>
+              <p class="section-subtext">Compare songs you have listened to against full album tracklists.</p>
+            </div>
+            <button type="button" class="btn-secondary" id="refreshAlbumsBreakdownBtn">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M23 4v6h-6M1 20v-6h6"/>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+              </svg>
+              <span>Refresh</span>
+            </button>
+          </div>
+          <div class="albums-list-container" id="albumsBreakdownList">
+            <div class="empty-state-card">No albums tracked yet. Scan your listening history to view albums.</div>
           </div>
         </div>
       </section>
@@ -164,6 +209,85 @@
               </div>
               <span class="badge badge-neutral">Enabled</span>
             </div>
+          </div>
+        </div>
+
+        <!-- History Scanner Section -->
+        <div class="config-section">
+          <h3 class="config-section-title">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            YouTube Music History Scanner
+          </h3>
+          <div class="card config-card">
+            <div class="config-info-row scanner-cta-row">
+              <div class="config-info-text">
+                <div class="config-item-title">Import Listening History</div>
+                <div class="config-item-desc">Automatically scan your YouTube Music playback history (<code class="code-badge">music.youtube.com/history</code>) to import all past plays, songs, and artists into your extension stats.</div>
+
+                <div class="sync-state-pill" id="historySyncPill">
+                  <span class="sync-dot" id="historySyncDot"></span>
+                  <span id="historySyncText">Sync Status: Checking previous sync...</span>
+                </div>
+
+                <label class="force-rescan-label" for="forceRescanCheckbox">
+                  <input type="checkbox" id="forceRescanCheckbox">
+                  <span>Force full rescan (ignore date boundary)</span>
+                </label>
+              </div>
+              <button type="button" class="btn-primary-action" id="launchHistoryScannerBtn">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
+                  <polygon points="5,3 19,12 5,21"/>
+                </svg>
+                <span>Launch Scanner</span>
+              </button>
+            </div>
+
+            <!-- Active Scanner Live Feedback Box -->
+            <div class="scanner-live-panel" id="scannerLivePanel" style="display: none;">
+              <div class="scanner-live-header">
+                <div class="scanner-live-status-group">
+                  <div class="ytmc-config-spinner" id="scannerConfigSpinner"></div>
+                  <span class="scanner-live-badge" id="scannerLiveBadge">Scanning History...</span>
+                </div>
+                <span class="scanner-live-counts" id="scannerLiveCounts">0 plays detected</span>
+              </div>
+              <div class="scanner-importing-card">
+                <span class="importing-label">Currently reading &amp; importing:</span>
+                <div class="importing-track-name" id="scannerImportingTrack">Initializing...</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- [DEBUG SECTION - Easy to inspect and revert] -->
+        <div class="config-section debug-section" id="debugSection">
+          <div class="debug-header-row">
+            <h3 class="config-section-title text-debug">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="16" x2="12" y2="12"/>
+                <line x1="12" y1="8" x2="12.01" y2="8"/>
+              </svg>
+              Diagnostics &amp; Debug Console
+            </h3>
+            <div class="debug-actions">
+              <button type="button" class="btn-debug-action" id="debugPingBtn">Ping Content Script</button>
+              <button type="button" class="btn-debug-action" id="debugCheckStorageBtn">Check Storage</button>
+              <button type="button" class="btn-debug-action" id="debugResetSyncBtn">Reset Boundary</button>
+              <button type="button" class="btn-debug-action" id="debugClearLogsBtn">Clear Logs</button>
+            </div>
+          </div>
+          <div class="card debug-card">
+            <div class="debug-status-bar">
+              <span class="debug-tag" id="debugTabStatus">YT Tab: Checking...</span>
+              <span class="debug-tag" id="debugStorageStatus">Storage: Checking...</span>
+              <span class="debug-tag" id="debugSyncBoundaryStatus">Boundary: Checking...</span>
+              <span class="debug-tag" id="debugScanStatus">Scanner: Idle</span>
+            </div>
+            <pre class="debug-console" id="debugConsole">Diagnostics initialized. Activity and error logs will appear here in real time.</pre>
           </div>
         </div>
 
