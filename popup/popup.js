@@ -23,7 +23,9 @@ const elements = {
   tabContents: document.querySelectorAll('.tab-content'),
 
   resetAllBtn: document.getElementById('resetAllBtn'),
-  openYtMusicBtn: document.getElementById('openYtMusicBtn')
+  openYtMusicBtn: document.getElementById('openYtMusicBtn'),
+  openDetailsBtn: document.getElementById('openDetailsBtn'),
+  openDetailsFooterBtn: document.getElementById('openDetailsFooterBtn')
 };
 
 // Tab Switching
@@ -212,6 +214,25 @@ if (elements.openYtMusicBtn) {
       window.open(ytMusicUrl, '_blank');
     }
   });
+}
+
+// Open Details Page
+function openDetailsPage() {
+  const detailsUrl = extBrowser.runtime.getURL('details/details.html');
+  try {
+    extBrowser.tabs.create({ url: detailsUrl });
+    window.close();
+  } catch (err) {
+    window.open(detailsUrl, '_blank');
+  }
+}
+
+if (elements.openDetailsBtn) {
+  elements.openDetailsBtn.addEventListener('click', openDetailsPage);
+}
+
+if (elements.openDetailsFooterBtn) {
+  elements.openDetailsFooterBtn.addEventListener('click', openDetailsPage);
 }
 
 // Live sync with storage changes

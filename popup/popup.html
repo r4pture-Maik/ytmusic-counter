@@ -22,12 +22,21 @@
           <span class="version">v1.1.0</span>
         </div>
       </div>
-      <button id="resetAllBtn" class="btn-icon" title="Reset All Statistics">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-          <path d="M3 3v5h5"/>
-        </svg>
-      </button>
+      <div class="header-actions">
+        <button id="openDetailsBtn" class="btn-icon" title="Open Full Details Page">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+            <polyline points="15 3 21 3 21 9"/>
+            <line x1="10" y1="14" x2="21" y2="3"/>
+          </svg>
+        </button>
+        <button id="resetAllBtn" class="btn-icon" title="Reset All Statistics">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+          </svg>
+        </button>
+      </div>
     </header>
 
     <!-- Main Counter Hero -->
@@ -93,11 +102,17 @@
 
     <!-- Footer Actions -->
     <footer class="footer">
+      <button id="openDetailsFooterBtn" class="btn-secondary-action">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 20V10M12 20V4M6 20v-6"/>
+        </svg>
+        Details Page
+      </button>
       <button id="openYtMusicBtn" class="btn-primary">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
           <polygon points="5,3 19,12 5,21"/>
         </svg>
-        Open YouTube Music
+        Open YT Music
       </button>
     </footer>
   </div>

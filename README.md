@@ -13,6 +13,7 @@ A lightweight, privacy-friendly Firefox WebExtension (Manifest V3) that tracks a
    - **Albums**: Counts how many times you have listened to a full album **from start to finish** without skipping.
 3. **Optimized Storage**: Uses compact $O(1)$ dictionary key-value maps. Zero bloat, no unbounded chronological histories, and negligible memory footprint (< 400 KB even after years of continuous listening).
 4. **No Build Step Required**: Pure WebExtensions (Manifest V3) JavaScript, CSS, and HTML.
+5. **Full Details Page & Config**: Dedicated tab view with a "Totals Song Listened" hero row and a Config tab featuring a safe 3-step confirmation data wipe.
 
 ---
 
@@ -26,6 +27,10 @@ ytmusic-counter/
 ├── content/
 │   ├── content.js             # Injected script detecting playback, albums & song badge
 │   └── content.css            # Styling for the per-song badge on YouTube Music's player
+├── details/
+│   ├── details.html           # Full details page with statistics & config tabs
+│   ├── details.css            # Responsive dark mode styling for the details dashboard
+│   └── details.js             # Tab switcher, stats sync & 3-step confirmation data wipe
 ├── popup/
 │   ├── popup.html             # Extension popup with tabs for Songs, Artists, and Albums
 │   ├── popup.css              # Dark theme styling (YouTube Music aesthetic)
