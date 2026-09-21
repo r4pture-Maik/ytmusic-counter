@@ -33,6 +33,53 @@ function cleanAlbumsDict(albums) {
   return cleaned;
 }
 
+/**
+ * Calculates how many times an album has been completely listened to.
+ * An album completion is defined as: every song in the official tracklist
+ * has been listened to at least N times: completePlays = min(playCount of each track).
+ */
+function calculateCompletePlays(album) {
+  if (!album || !album.totalTracks || !Array.isArray(album.allTracks) || album.allTracks.length === 0) {
+    return album ? (album.completePlays || 0) : 0;
+  }
+
+  // Multi-track albums must have more than 1 track
+  if (album.totalTracks <= 1) {
+    return 0;
+  }
+
+  const listened = album.tracksListened || {};
+  const listenedKeys = Object.keys(listened);
+
+  if (listenedKeys.length < album.totalTracks) {
+    return 0;
+  }
+
+  let minPlays = Infinity;
+
+  for (const trackTitle of album.allTracks) {
+    let count = listened[trackTitle];
+    if (typeof count !== 'number') {
+      const lower = trackTitle.toLowerCase().trim();
+      const matchKey = listenedKeys.find(k => {
+        const kLower = k.toLowerCase().trim();
+        return kLower === lower || kLower.includes(lower) || lower.includes(kLower);
+      });
+      count = matchKey ? listened[matchKey] : 0;
+    }
+
+    if (count < minPlays) {
+      minPlays = count;
+    }
+
+    if (minPlays === 0) {
+      break;
+    }
+  }
+
+  return minPlays === Infinity ? 0 : minPlays;
+}
+
 // In-memory cache for compiled statistics
 let statsCache = null;
 
@@ -214,7 +261,20 @@ function sanitizeStorageData(data) {
       };
     } else {
       cleanAlbums[cleanAlbKey].playCount = (cleanAlbums[cleanAlbKey].playCount || 0) + (alb.playCount || 1);
-      cleanAlbums[cleanAlbKey].completePlays = (cleanAlbums[cleanAlbKey].completePlays || 0) + (alb.completePlays || 0);
+      cleanAlbums[cleanAlbKey].completePlays = Math.max(cleanAlbums[cleanAlbKey].completePlays || 0, alb.completePlays || 0);
+      if (alb.totalTracks && !cleanAlbums[cleanAlbKey].totalTracks) cleanAlbums[cleanAlbKey].totalTracks = alb.totalTracks;
+      if (alb.allTracks && !cleanAlbums[cleanAlbKey].allTracks) cleanAlbums[cleanAlbKey].allTracks = alb.allTracks;
+      if (alb.albumBrowseId && !cleanAlbums[cleanAlbKey].albumBrowseId) cleanAlbums[cleanAlbKey].albumBrowseId = alb.albumBrowseId;
+      if (alb.tracksListened) {
+        if (!cleanAlbums[cleanAlbKey].tracksListened) cleanAlbums[cleanAlbKey].tracksListened = {};
+        for (const [t, c] of Object.entries(alb.tracksListened)) {
+          cleanAlbums[cleanAlbKey].tracksListened[t] = (cleanAlbums[cleanAlbKey].tracksListened[t] || 0) + c;
+        }
+        cleanAlbums[cleanAlbKey].uniqueTracksCount = Object.keys(cleanAlbums[cleanAlbKey].tracksListened).length;
+      }
+      if (cleanAlbums[cleanAlbKey].totalTracks && cleanAlbums[cleanAlbKey].allTracks) {
+        cleanAlbums[cleanAlbKey].completePlays = calculateCompletePlays(cleanAlbums[cleanAlbKey]);
+      }
       modified = true;
     }
   }
@@ -315,6 +375,13 @@ extBrowser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
 
+    case 'FETCH_ALBUM_COVER': {
+      handleFetchAlbumCover(message.payload)
+        .then(result => sendResponse({ status: 'ok', data: result }))
+        .catch(err => sendResponse({ status: 'error', error: err.message }));
+      return true;
+    }
+
     case 'RESET_STATS': {
       resetStats()
         .then(res => sendResponse({ status: 'ok', data: res }))
@@ -326,6 +393,35 @@ extBrowser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       handleImportHistory(message.payload)
         .then(result => sendResponse({ status: 'ok', data: result }))
         .catch(err => sendResponse({ status: 'error', error: err.message }));
+      return true;
+    }
+
+    case 'BACKFILL_ALBUM_COVERS': {
+      handleBackfillAlbumCovers(message.payload)
+        .then(result => sendResponse({ status: 'ok', data: result }))
+        .catch(err => sendResponse({ status: 'error', error: err.message }));
+      return true;
+    }
+
+    case 'GET_THUMBNAIL_STATS': {
+      if (typeof thumbnailCache !== 'undefined' && thumbnailCache.getThumbnailStats) {
+        thumbnailCache.getThumbnailStats()
+          .then(stats => sendResponse({ status: 'ok', data: stats }))
+          .catch(err => sendResponse({ status: 'error', error: err.message }));
+      } else {
+        sendResponse({ status: 'ok', data: { count: 0, totalBytes: 0, formattedSize: '0 KB' } });
+      }
+      return true;
+    }
+
+    case 'CLEAR_THUMBNAIL_CACHE': {
+      if (typeof thumbnailCache !== 'undefined' && thumbnailCache.clearThumbnailCache) {
+        thumbnailCache.clearThumbnailCache()
+          .then(res => sendResponse({ status: 'ok', data: res }))
+          .catch(err => sendResponse({ status: 'error', error: err.message }));
+      } else {
+        sendResponse({ status: 'ok', data: { cleared: true } });
+      }
       return true;
     }
 
@@ -400,6 +496,7 @@ async function handleTrackPlayed(rawTrack) {
         album: albumName,
         artist: track.artist || 'Unknown Artist',
         albumBrowseId: track.albumBrowseId || '',
+        coverUrl: track.coverUrl || '',
         tracksListened: {
           [track.title]: 1
         },
@@ -416,6 +513,21 @@ async function handleTrackPlayed(rawTrack) {
       if (track.albumBrowseId && !albums[albumKey].albumBrowseId) {
         albums[albumKey].albumBrowseId = track.albumBrowseId;
       }
+      if (track.coverUrl && !albums[albumKey].coverUrl) {
+        albums[albumKey].coverUrl = track.coverUrl;
+      }
+    }
+
+    // Pre-cache thumbnail asynchronously into local IndexedDB
+    if (track.coverUrl && typeof thumbnailCache !== 'undefined' && thumbnailCache.cacheRemoteThumbnail) {
+      thumbnailCache.cacheRemoteThumbnail(albumKey, track.coverUrl).catch(() => {});
+    }
+
+    // Cumulative full album completion check
+    if (albums[albumKey].totalTracks && albums[albumKey].allTracks) {
+      albums[albumKey].completePlays = calculateCompletePlays(albums[albumKey]);
+    } else if (albums[albumKey].albumBrowseId) {
+      ensureAlbumTracklist(albumKey, albums[albumKey].albumBrowseId);
     }
   }
 
@@ -570,6 +682,14 @@ async function resetStats() {
   await extBrowser.storage.local.clear();
   await extBrowser.storage.local.set(emptyState);
   invalidateStatsCache();
+
+  // Clear local media cache
+  if (typeof thumbnailCache !== 'undefined' && thumbnailCache.clearThumbnailCache) {
+    try {
+      await thumbnailCache.clearThumbnailCache();
+    } catch (_) {}
+  }
+
   return emptyState;
 }
 
@@ -641,6 +761,7 @@ async function handleImportHistory(payload) {
           album: albumName,
           artist: track.artist || 'Unknown Artist',
           albumBrowseId: track.albumBrowseId || '',
+          coverUrl: track.coverUrl || '',
           tracksListened: {
             [track.title]: 1
           },
@@ -657,7 +778,19 @@ async function handleImportHistory(payload) {
         if (track.albumBrowseId && !albums[albumKey].albumBrowseId) {
           albums[albumKey].albumBrowseId = track.albumBrowseId;
         }
+        if (track.coverUrl && !albums[albumKey].coverUrl) {
+          albums[albumKey].coverUrl = track.coverUrl;
+        }
       }
+    }
+  }
+
+  // Recalculate completePlays for modified albums and resolve missing tracklists
+  for (const [albKey, alb] of Object.entries(albums)) {
+    if (alb.totalTracks && alb.allTracks) {
+      alb.completePlays = calculateCompletePlays(alb);
+    } else if (alb.albumBrowseId) {
+      ensureAlbumTracklist(albKey, alb.albumBrowseId);
     }
   }
 
@@ -695,27 +828,64 @@ async function handleGetAlbumDetails(payload) {
   const data = await extBrowser.storage.local.get(['albums']);
   const albums = cleanAlbumsDict(data.albums || {});
   const albumKey = makeAlbumKey(payload.album, payload.artist);
-  const album = albums[albumKey];
+  let album = albums[albumKey];
+  if (!album) {
+    const matchKey = Object.keys(albums).find(k => k.toLowerCase() === albumKey.toLowerCase());
+    if (matchKey) album = albums[matchKey];
+  }
   if (!album) return null;
 
-  // If album has albumBrowseId and totalTracks is not yet known, query YouTube Music
-  if (album.albumBrowseId && !album.totalTracks) {
+  // If album has albumBrowseId and allTracks is not yet populated, query YouTube Music
+  if (album.albumBrowseId && (!album.allTracks || album.allTracks.length === 0)) {
     try {
       const fetched = await fetchAlbumTrackCount(album.albumBrowseId);
-      if (fetched && fetched.totalTracks) {
-        album.totalTracks = fetched.totalTracks;
-        album.allTracks = fetched.trackTitles || [];
-        if (album.uniqueTracksCount >= album.totalTracks && album.totalTracks > 1) {
-          if (!album.completePlays) album.completePlays = 1;
+      if (fetched && fetched.trackTitles && fetched.trackTitles.length > 0) {
+        album.totalTracks = fetched.totalTracks || fetched.trackTitles.length;
+        album.allTracks = fetched.trackTitles;
+        album.completePlays = calculateCompletePlays(album);
+        const actualKey = albums[albumKey] ? albumKey : Object.keys(albums).find(k => k.toLowerCase() === albumKey.toLowerCase());
+        if (actualKey) {
+          albums[actualKey] = album;
+          await extBrowser.storage.local.set({ albums });
+          invalidateStatsCache();
         }
-        albums[albumKey] = album;
-        await extBrowser.storage.local.set({ albums });
-        invalidateStatsCache();
       }
     } catch (_) {}
+  } else if (album.totalTracks && album.allTracks) {
+    album.completePlays = calculateCompletePlays(album);
   }
 
   return album;
+}
+
+/**
+ * Recursively extracts track titles from YouTube Music browse results
+ */
+function extractTrackTitlesFromBrowse(node, titles = []) {
+  if (!node || typeof node !== 'object') return titles;
+
+  if (node.musicResponsiveListItemRenderer) {
+    const renderer = node.musicResponsiveListItemRenderer;
+    const flexCols = renderer.flexColumns || [];
+    const titleCol = flexCols[0]?.musicResponsiveListItemFlexColumnRenderer?.title?.runs?.[0]?.text;
+    if (titleCol && !titles.includes(titleCol.trim())) {
+      titles.push(titleCol.trim());
+    }
+    return titles;
+  }
+
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      extractTrackTitlesFromBrowse(item, titles);
+    }
+  } else {
+    for (const key of Object.keys(node)) {
+      if (key !== 'trackingParams' && key !== 'clickTrackingParams') {
+        extractTrackTitlesFromBrowse(node[key], titles);
+      }
+    }
+  }
+  return titles;
 }
 
 /**
@@ -741,30 +911,351 @@ async function fetchAlbumTrackCount(browseId) {
     if (!res.ok) return null;
     const json = await res.json();
     
-    const trackTitles = [];
-    const tabs = json.contents?.twoColumnBrowseResultsRenderer?.tabs || [];
-    const tabContents = tabs[0]?.tabRenderer?.content?.sectionListRenderer?.contents || [];
-    for (const section of tabContents) {
-      const shelf = section.musicShelfRenderer || section.musicPlaylistShelfRenderer;
-      if (shelf && shelf.contents) {
-        for (const item of shelf.contents) {
-          const renderer = item.musicResponsiveListItemRenderer;
-          if (renderer) {
-            const flexCols = renderer.flexColumns || [];
-            const titleCol = flexCols[0]?.musicResponsiveListItemFlexColumnRenderer?.title?.runs?.[0]?.text;
-            if (titleCol) trackTitles.push(titleCol.trim());
-          }
-        }
-      }
-    }
+    const trackTitles = extractTrackTitlesFromBrowse(json.contents);
+    const coverUrl = findBestThumbnail(json);
 
-    if (trackTitles.length > 0) {
-      return { totalTracks: trackTitles.length, trackTitles };
+    if (trackTitles.length > 0 || coverUrl) {
+      return { totalTracks: trackTitles.length || null, trackTitles, coverUrl };
     }
     return null;
   } catch (err) {
     console.warn('[YTMusic Counter] Error fetching album metadata:', err);
     return null;
+  }
+}
+
+function findBestThumbnail(obj) {
+  if (!obj) return null;
+  let bestUrl = null;
+  let maxDim = 0;
+
+  function traverse(node, depth = 0) {
+    if (!node || depth > 15) return;
+    if (typeof node !== 'object') return;
+
+    if (typeof node.url === 'string' && (node.url.includes('googleusercontent.com') || node.url.includes('ggpht.com') || node.url.includes('ytimg.com'))) {
+      const dim = (node.width || 1) * (node.height || 1);
+      if (dim >= maxDim) {
+        maxDim = dim;
+        bestUrl = node.url;
+      }
+    }
+
+    if (Array.isArray(node.thumbnails)) {
+      for (const t of node.thumbnails) {
+        if (t && typeof t.url === 'string') {
+          const dim = (t.width || 1) * (t.height || 1);
+          if (dim >= maxDim) {
+            maxDim = dim;
+            bestUrl = t.url;
+          }
+        }
+      }
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) traverse(item, depth + 1);
+    } else {
+      for (const key of Object.keys(node)) {
+        if (key === 'thumbnails') continue;
+        traverse(node[key], depth + 1);
+      }
+    }
+  }
+
+  traverse(obj);
+
+  if (bestUrl) {
+    if (bestUrl.startsWith('//')) bestUrl = 'https:' + bestUrl;
+    return bestUrl;
+  }
+  return null;
+}
+
+let googleSearchCooldownUntil = 0;
+
+async function fetchCoverFromCoverArtArchive(album, artist) {
+  if (!album) return null;
+  const cleanAlb = (album || '').replace(/\s*[\(\[].*?[\)\]]/g, '').trim();
+  const cleanArt = (artist || '').split('•')[0].split(/[,&/]| feat/i)[0].trim();
+  if (!cleanAlb) return null;
+
+  try {
+    const query = cleanArt
+      ? `release:"${cleanAlb}" AND artist:"${cleanArt}"`
+      : `release:"${cleanAlb}"`;
+    const mbUrl = `https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(query)}&fmt=json&limit=3`;
+    const mbRes = await fetch(mbUrl, {
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'YTMusicCounter/1.0.0 (https://github.com/r4pture-Maik/ytmusic-counter)'
+      }
+    });
+
+    if (mbRes.ok) {
+      const mbData = await mbRes.json();
+      if (mbData.releases && mbData.releases.length > 0) {
+        for (const rel of mbData.releases) {
+          if (rel['cover-art-archive'] && rel['cover-art-archive'].front) {
+            return `https://coverartarchive.org/release/${rel.id}/front-250.jpg`;
+          }
+        }
+        for (const rel of mbData.releases) {
+          if (rel['release-group'] && rel['release-group'].id) {
+            return `https://coverartarchive.org/release-group/${rel['release-group'].id}/front-250.jpg`;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[YTMusic Counter] Cover Art Archive lookup error:', err);
+  }
+  return null;
+}
+
+async function resolveAlbumCover(album, artist, browseId) {
+  let coverUrl = null;
+  const cleanAlb = (album || '').replace(/\s*[\(\[].*?[\)\]]/g, '').trim();
+  const cleanArt = (artist || '').split('•')[0].split(/[,&/]| feat/i)[0].trim();
+
+  // Tier 1: Try YouTube Music Browse endpoint if browseId exists
+  if (browseId) {
+    try {
+      const cleanId = browseId.startsWith('VL') ? browseId : (browseId.startsWith('OLAK5uy') ? `VL${browseId}` : browseId);
+      const res = await fetch('https://music.youtube.com/youtubei/v1/browse?prettyPrint=false', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          context: {
+            client: {
+              clientName: 'WEB_REMIX',
+              clientVersion: '1.20240101.01.00'
+            }
+          },
+          browseId: cleanId
+        })
+      });
+      if (res.ok) {
+        const json = await res.json();
+        coverUrl = findBestThumbnail(json);
+      }
+    } catch (_) {}
+  }
+
+  // Tier 2: Try YouTube Music Search endpoint (if not in cooldown)
+  const isGoogleThrottled = Date.now() < googleSearchCooldownUntil;
+
+  if (!coverUrl && (cleanAlb || cleanArt) && !isGoogleThrottled) {
+    try {
+      const searchRes = await fetch('https://music.youtube.com/youtubei/v1/search?prettyPrint=false', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          context: {
+            client: {
+              clientName: 'WEB_REMIX',
+              clientVersion: '1.20240101.01.00'
+            }
+          },
+          query: `${cleanAlb} ${cleanArt}`.trim()
+        })
+      });
+
+      if (searchRes.status === 429 || searchRes.status === 403) {
+        googleSearchCooldownUntil = Date.now() + 10 * 60 * 1000;
+        console.warn('[YTMusic Counter] Google rate-limited search. Cooldown active for 10 minutes.');
+      } else if (searchRes.ok) {
+        const json = await searchRes.json();
+        coverUrl = findBestThumbnail(json);
+      }
+    } catch (err) {
+      console.warn('[YTMusic Counter] Native search error:', err);
+    }
+  }
+
+  // Fallback search with album title only if still not throttled
+  if (!coverUrl && cleanAlb && Date.now() >= googleSearchCooldownUntil) {
+    try {
+      const searchRes = await fetch('https://music.youtube.com/youtubei/v1/search?prettyPrint=false', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          context: {
+            client: {
+              clientName: 'WEB_REMIX',
+              clientVersion: '1.20240101.01.00'
+            }
+          },
+          query: cleanAlb
+        })
+      });
+
+      if (searchRes.status === 429 || searchRes.status === 403) {
+        googleSearchCooldownUntil = Date.now() + 10 * 60 * 1000;
+        console.warn('[YTMusic Counter] Google rate-limited search. Cooldown active for 10 minutes.');
+      } else if (searchRes.ok) {
+        const json = await searchRes.json();
+        coverUrl = findBestThumbnail(json);
+      }
+    } catch (_) {}
+  }
+
+  // Tier 3: Cover Art Archive / MusicBrainz Fallback
+  if (!coverUrl && cleanAlb) {
+    coverUrl = await fetchCoverFromCoverArtArchive(cleanAlb, cleanArt);
+  }
+
+  return coverUrl;
+}
+
+// Sequential queue for cover resolution (max 1 request at a time with 1.2s delay)
+const coverQueue = [];
+let isProcessingQueue = false;
+
+function enqueueCoverRequest(album, artist, browseId) {
+  return new Promise((resolve) => {
+    coverQueue.push({ album, artist, browseId, resolve });
+    processCoverQueue();
+  });
+}
+
+async function processCoverQueue() {
+  if (isProcessingQueue || coverQueue.length === 0) return;
+  isProcessingQueue = true;
+
+  while (coverQueue.length > 0) {
+    const item = coverQueue.shift();
+    try {
+      const url = await resolveAlbumCover(item.album, item.artist, item.browseId);
+      item.resolve(url);
+    } catch (_) {
+      item.resolve(null);
+    }
+    if (coverQueue.length > 0) {
+      await new Promise(r => setTimeout(r, 1200));
+    }
+  }
+
+  isProcessingQueue = false;
+}
+
+async function handleFetchAlbumCover(payload) {
+  if (!payload || !payload.album) return { coverUrl: null };
+  const albumName = payload.album;
+  const artistName = payload.artist || '';
+  const albumKey = makeAlbumKey(albumName, artistName);
+
+  const data = await extBrowser.storage.local.get(['albums']);
+  const albums = cleanAlbumsDict(data.albums || {});
+
+  if (albums[albumKey] && albums[albumKey].coverUrl) {
+    return { coverUrl: albums[albumKey].coverUrl };
+  }
+
+  const browseId = payload.browseId || (albums[albumKey] && albums[albumKey].albumBrowseId);
+  const coverUrl = await enqueueCoverRequest(albumName, artistName, browseId);
+
+  if (coverUrl) {
+    if (typeof thumbnailCache !== 'undefined' && thumbnailCache.cacheRemoteThumbnail) {
+      thumbnailCache.cacheRemoteThumbnail(albumKey, coverUrl).catch(() => {});
+    }
+    const freshData = await extBrowser.storage.local.get(['albums']);
+    const freshAlbums = cleanAlbumsDict(freshData.albums || {});
+    if (!freshAlbums[albumKey]) {
+      freshAlbums[albumKey] = {
+        album: albumName,
+        artist: artistName,
+        albumBrowseId: browseId || '',
+        coverUrl: coverUrl,
+        tracksListened: {},
+        uniqueTracksCount: 0,
+        totalTracks: null,
+        playCount: 0,
+        completePlays: 0
+      };
+    } else {
+      freshAlbums[albumKey].coverUrl = coverUrl;
+    }
+    await extBrowser.storage.local.set({ albums: freshAlbums });
+    invalidateStatsCache();
+  }
+
+  return { coverUrl };
+}
+
+async function handleBackfillAlbumCovers(payload) {
+  if (!payload || !Array.isArray(payload.covers) || payload.covers.length === 0) {
+    return { updated: 0 };
+  }
+
+  const data = await extBrowser.storage.local.get(['albums']);
+  const albums = cleanAlbumsDict(data.albums || {});
+  let updated = 0;
+
+  for (const item of payload.covers) {
+    if (!item.album || !item.coverUrl) continue;
+    const albumKey = makeAlbumKey(item.album, item.artist);
+    let target = albums[albumKey];
+    if (!target) {
+      const matchKey = Object.keys(albums).find(k => k.toLowerCase() === albumKey.toLowerCase());
+      if (matchKey) target = albums[matchKey];
+    }
+
+    if (target && !target.coverUrl) {
+      target.coverUrl = item.coverUrl;
+      if (item.albumBrowseId && !target.albumBrowseId) {
+        target.albumBrowseId = item.albumBrowseId;
+      }
+      updated++;
+    }
+  }
+
+  if (updated > 0) {
+    await extBrowser.storage.local.set({ albums });
+    invalidateStatsCache();
+    console.log(`[YTMusic Counter] Backfilled ${updated} album covers from history.`);
+  }
+
+  return { updated };
+}
+
+// In-flight tracklist fetch requests deduplication
+const pendingTracklistFetches = new Set();
+
+/**
+ * Asynchronously resolves album tracklist and recomputes cumulative completion
+ */
+async function ensureAlbumTracklist(albumKey, browseId) {
+  if (!browseId || pendingTracklistFetches.has(albumKey)) return;
+  pendingTracklistFetches.add(albumKey);
+
+  try {
+    const fetched = await fetchAlbumTrackCount(browseId);
+    if (fetched) {
+      const data = await extBrowser.storage.local.get(['albums']);
+      const albums = cleanAlbumsDict(data.albums || {});
+      if (albums[albumKey]) {
+        let changed = false;
+        if (fetched.totalTracks && fetched.trackTitles) {
+          albums[albumKey].totalTracks = fetched.totalTracks;
+          albums[albumKey].allTracks = fetched.trackTitles;
+          albums[albumKey].completePlays = calculateCompletePlays(albums[albumKey]);
+          changed = true;
+        }
+        if (fetched.coverUrl && !albums[albumKey].coverUrl) {
+          albums[albumKey].coverUrl = fetched.coverUrl;
+          changed = true;
+        }
+        if (changed) {
+          await extBrowser.storage.local.set({ albums });
+          invalidateStatsCache();
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[YTMusic Counter] Error ensuring album tracklist for', albumKey, err);
+  } finally {
+    pendingTracklistFetches.delete(albumKey);
   }
 }
 

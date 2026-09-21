@@ -27,10 +27,15 @@
     if (!titleElem) {
       if (navigator.mediaSession && navigator.mediaSession.metadata) {
         const meta = navigator.mediaSession.metadata;
+        let coverUrl = '';
+        if (meta.artwork && meta.artwork.length > 0) {
+          coverUrl = meta.artwork[meta.artwork.length - 1].src || '';
+        }
         return {
           title: meta.title || '',
           artist: meta.artist || '',
-          album: meta.album || ''
+          album: meta.album || '',
+          coverUrl
         };
       }
       return null;
@@ -104,7 +109,21 @@
       if (match) videoId = match[1];
     }
 
-    return { title, artist, album, albumBrowseId, isSingle, videoId };
+    let coverUrl = '';
+    if (navigator.mediaSession && navigator.mediaSession.metadata && navigator.mediaSession.metadata.artwork) {
+      const arts = navigator.mediaSession.metadata.artwork;
+      if (arts.length > 0 && arts[arts.length - 1]?.src) {
+        coverUrl = arts[arts.length - 1].src;
+      }
+    }
+    if (!coverUrl) {
+      const img = document.querySelector('ytmusic-player-bar img#img, ytmusic-player-bar .thumbnail img, ytmusic-player-bar .image');
+      if (img && img.src && !img.src.startsWith('data:')) {
+        coverUrl = img.src;
+      }
+    }
+
+    return { title, artist, album, albumBrowseId, isSingle, videoId, coverUrl };
   }
 
   /**
@@ -426,13 +445,20 @@
       if (match) videoId = match[1];
     }
 
+    let coverUrl = '';
+    const itemImg = item.querySelector('img#img, yt-img-shadow img, img');
+    if (itemImg && itemImg.src && !itemImg.src.startsWith('data:')) {
+      coverUrl = itemImg.src;
+    }
+
     return {
       title,
       artist: artist || 'Unknown Artist',
       album: album || '',
       albumBrowseId: albumBrowseId || '',
       isSingle: Boolean(isSingle),
-      videoId
+      videoId,
+      coverUrl
     };
   }
 
@@ -899,9 +925,61 @@
     });
   }
 
+  let harvestTimeout = null;
+  async function harvestHistoryCovers() {
+    if (!isHistoryPage()) return;
+    try {
+      const items = Array.from(document.querySelectorAll('ytmusic-responsive-list-item-renderer'));
+      if (items.length === 0) return;
+
+      const data = await extBrowser.storage.local.get(['albums']);
+      const albums = data.albums || {};
+      const missingKeys = new Set(
+        Object.keys(albums).filter(k => !albums[k].coverUrl)
+      );
+      if (missingKeys.size === 0) return;
+
+      const coversToBackfill = [];
+      const seen = new Set();
+
+      for (const item of items) {
+        const parsed = parseTrackFromItem(item);
+        if (!parsed || !parsed.album || !parsed.coverUrl) continue;
+        const key = `${parsed.album.trim().toLowerCase()}:::${(parsed.artist || '').trim().toLowerCase()}`;
+        if (missingKeys.has(key) && !seen.has(key)) {
+          seen.add(key);
+          coversToBackfill.push({
+            album: parsed.album,
+            artist: parsed.artist,
+            coverUrl: parsed.coverUrl,
+            albumBrowseId: parsed.albumBrowseId || ''
+          });
+        }
+      }
+
+      if (coversToBackfill.length > 0) {
+        extBrowser.runtime.sendMessage({
+          type: 'BACKFILL_ALBUM_COVERS',
+          payload: { covers: coversToBackfill }
+        }, (res) => {
+          if (res && res.status === 'ok' && res.data && res.data.updated > 0) {
+            console.log(`[YTMC Content] Successfully backfilled ${res.data.updated} album covers from history page.`);
+          }
+        });
+      }
+    } catch (_) {}
+  }
+
+  function scheduleHarvestHistoryCovers() {
+    if (!isHistoryPage()) return;
+    if (harvestTimeout) clearTimeout(harvestTimeout);
+    harvestTimeout = setTimeout(harvestHistoryCovers, 1500);
+  }
+
   function checkHistoryRoute() {
     if (isHistoryPage()) {
       injectHistoryScannerOverlay();
+      scheduleHarvestHistoryCovers();
     } else {
       if (isScanning) {
         stopAndSaveHistory(false, 'Navigated away from history');
@@ -925,6 +1003,9 @@
   const observer = new MutationObserver(() => {
     checkTrackChange();
     handleRouteChange();
+    if (isHistoryPage()) {
+      scheduleHarvestHistoryCovers();
+    }
   });
 
   // Route and page change observers

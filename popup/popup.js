@@ -12,10 +12,6 @@ const elements = {
   uniqueAlbums: document.getElementById('uniqueAlbums'),
   completedAlbums: document.getElementById('completedAlbums'),
 
-  currentTrackTitle: document.getElementById('currentTrackTitle'),
-  currentTrackArtist: document.getElementById('currentTrackArtist'),
-  currentSongPlaysBadge: document.getElementById('currentSongPlaysBadge'),
-
   topSongsList: document.getElementById('topSongsList'),
   topArtistsList: document.getElementById('topArtistsList'),
   topAlbumsList: document.getElementById('topAlbumsList'),
@@ -23,9 +19,7 @@ const elements = {
   tabButtons: document.querySelectorAll('.tab-btn'),
   tabContents: document.querySelectorAll('.tab-content'),
 
-  resetAllBtn: document.getElementById('resetAllBtn'),
-  openYtMusicBtn: document.getElementById('openYtMusicBtn'),
-  openDetailsBtn: document.getElementById('openDetailsBtn'),
+  refreshStatsBtn: document.getElementById('refreshStatsBtn'),
   openDetailsFooterBtn: document.getElementById('openDetailsFooterBtn')
 };
 
@@ -79,17 +73,6 @@ function renderStats(stats) {
   if (elements.uniqueAlbums) elements.uniqueAlbums.textContent = stats.uniqueAlbumsCount || 0;
   if (elements.completedAlbums) elements.completedAlbums.textContent = stats.completedAlbumsCount || 0;
 
-  // Now Playing Card
-  if (stats.currentTrack) {
-    elements.currentTrackTitle.textContent = stats.currentTrack.title || 'Unknown Title';
-    elements.currentTrackArtist.textContent = [stats.currentTrack.artist, stats.currentTrack.album].filter(Boolean).join(' • ');
-    const songPlays = stats.currentTrack.songPlays || 0;
-    elements.currentSongPlaysBadge.textContent = `${songPlays} ${songPlays === 1 ? 'play' : 'plays'}`;
-  } else {
-    elements.currentTrackTitle.textContent = 'No track playing';
-    elements.currentTrackArtist.textContent = 'Open music.youtube.com';
-    elements.currentSongPlaysBadge.textContent = '0 plays';
-  }
 
   // Render Top Songs
   renderSongsList(stats.topSongs || []);
@@ -205,37 +188,14 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-// Reset stats button handler
-if (elements.resetAllBtn) {
-  elements.resetAllBtn.addEventListener('click', () => {
-    if (confirm('Are you sure you want to reset all song, artist, and album statistics?')) {
-      extBrowser.runtime.sendMessage({ type: 'RESET_STATS' }, (response) => {
-        if (response && response.status === 'ok') {
-          loadStats();
-        }
-      });
-    }
-  });
-}
-
-// Open / Focus YouTube Music tab
-if (elements.openYtMusicBtn) {
-  elements.openYtMusicBtn.addEventListener('click', async () => {
-    const ytMusicUrl = 'https://music.youtube.com/';
-    try {
-      const tabs = await extBrowser.tabs.query({ url: '*://music.youtube.com/*' });
-      if (tabs.length > 0) {
-        await extBrowser.tabs.update(tabs[0].id, { active: true });
-        if (tabs[0].windowId) {
-          await extBrowser.windows.update(tabs[0].windowId, { focused: true });
-        }
-      } else {
-        await extBrowser.tabs.create({ url: ytMusicUrl });
-      }
-      window.close();
-    } catch (err) {
-      window.open(ytMusicUrl, '_blank');
-    }
+// Refresh stats button handler
+if (elements.refreshStatsBtn) {
+  elements.refreshStatsBtn.addEventListener('click', async () => {
+    elements.refreshStatsBtn.classList.add('spinning');
+    await loadStats();
+    setTimeout(() => {
+      elements.refreshStatsBtn.classList.remove('spinning');
+    }, 450);
   });
 }
 
@@ -250,10 +210,6 @@ function openDetailsPage() {
   }
 }
 
-if (elements.openDetailsBtn) {
-  elements.openDetailsBtn.addEventListener('click', openDetailsPage);
-}
-
 if (elements.openDetailsFooterBtn) {
   elements.openDetailsFooterBtn.addEventListener('click', openDetailsPage);
 }
@@ -262,7 +218,10 @@ if (elements.openDetailsFooterBtn) {
 if (extBrowser.storage && extBrowser.storage.onChanged) {
   extBrowser.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === 'local') {
-      loadStats();
+      const counterKeys = ['songs', 'artists', 'albums', 'totalPlays'];
+      if (counterKeys.some(k => k in changes)) {
+        loadStats();
+      }
     }
   });
 }

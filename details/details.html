@@ -19,7 +19,6 @@
         </div>
         <div class="brand-title">
           <h1>YTMusic Counter</h1>
-          <span class="badge">Stats &amp; Settings</span>
         </div>
       </div>
 
@@ -40,14 +39,7 @@
         </button>
       </nav>
 
-      <div class="nav-actions">
-        <a href="https://music.youtube.com" target="_blank" class="btn-secondary" id="openYtMusicExternal">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-            <polygon points="5,3 19,12 5,21"/>
-          </svg>
-          <span>Open YT Music</span>
-        </a>
-      </div>
+
     </header>
 
     <!-- Main Content Area -->
@@ -59,10 +51,7 @@
             <h2>Listening Overview</h2>
             <p class="panel-subtitle">Your personal listening statistics and history on YouTube Music.</p>
           </div>
-          <div class="live-status">
-            <span class="status-dot"></span>
-            <span>Active Tracking</span>
-          </div>
+
         </div>
 
         <!-- Total Songs Played Row (Primary Hero Row) -->
@@ -147,18 +136,7 @@
             </div>
           </div>
 
-          <div class="card stat-card full-width-card" id="nowPlayingCard">
-            <div class="card-icon now-playing-icon">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-                <polygon points="5,3 19,12 5,21"/>
-              </svg>
-            </div>
-            <div class="card-info">
-              <span class="card-title">Now Playing</span>
-              <span class="card-value-text" id="activeTrackTitle">No track currently active</span>
-              <span class="card-subtext" id="activeTrackArtist">-</span>
-            </div>
-          </div>
+
         </div>
 
         <!-- Albums & Track Breakdown Section -->
@@ -289,6 +267,45 @@
             </div>
             <pre class="debug-console" id="debugConsole">Diagnostics initialized. Activity and error logs will appear here in real time.</pre>
           </div>
+        <!-- Media & Cover Art Cache Section -->
+        <div class="config-section">
+          <h3 class="config-section-title">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <polyline points="21 15 16 10 5 21"/>
+            </svg>
+            Cover Art &amp; Media Cache
+          </h3>
+          <div class="card cache-card">
+            <div class="cache-card-info">
+              <div>
+                <h4 class="cache-card-title">Local Thumbnail Database</h4>
+                <p class="cache-card-desc">Album covers are downscaled to 128×128 WebP and stored in IndexedDB for instant, zero-flicker offline rendering.</p>
+              </div>
+              <div class="cache-stats-badge" id="thumbnailCacheStatsBadge">
+                <span class="cache-stat-count" id="thumbnailCacheCount">Calculating...</span>
+                <span class="cache-stat-size" id="thumbnailCacheSize"></span>
+              </div>
+            </div>
+            <div class="cache-card-actions">
+              <button type="button" class="btn-cache-action" id="refreshThumbnailCacheStatsBtn">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M23 4v6h-6M1 20v-6h6"/>
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+                <span>Check Size</span>
+              </button>
+              <button type="button" class="btn-cache-action danger-tint" id="clearThumbnailCacheBtn">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+                <span>Clear Cover Cache</span>
+              </button>
+              <span class="cache-op-message" id="thumbnailCacheOpMessage" style="display:none;"></span>
+            </div>
+          </div>
         </div>
 
         <!-- Danger Zone: 3-step Confirmation Delete -->
@@ -401,6 +418,7 @@
     </main>
   </div>
 
+  <script src="../background/thumbnail-cache.js"></script>
   <script src="details.js"></script>
 </body>
 </html>

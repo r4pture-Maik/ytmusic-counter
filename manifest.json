@@ -16,7 +16,13 @@
     "tabs"
   ],
   "host_permissions": [
-    "*://music.youtube.com/*"
+    "*://music.youtube.com/*",
+    "https://*.musicbrainz.org/*",
+    "https://*.coverartarchive.org/*",
+    "https://*.googleusercontent.com/*",
+    "https://*.ggpht.com/*",
+    "https://*.ytimg.com/*",
+    "https://*.archive.org/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",
@@ -27,7 +33,10 @@
     }
   },
   "background": {
-    "scripts": ["background/background.js"]
+    "scripts": [
+      "background/thumbnail-cache.js",
+      "background/background.js"
+    ]
   },
   "content_scripts": [
     {
