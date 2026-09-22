@@ -646,13 +646,21 @@ body {
 .track-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  gap: 8px;
   padding: 4px 10px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--border-subtle);
   border-radius: 14px;
   font-size: 12px;
   color: var(--text-primary);
+  max-width: 100%;
+}
+
+.track-chip span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .track-chip.listened {
@@ -664,12 +672,19 @@ body {
   font-weight: 700;
   color: #10b981;
   font-size: 11px;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .track-chip.unplayed {
   border-color: rgba(255, 255, 255, 0.06);
   color: var(--text-muted);
   opacity: 0.7;
+}
+
+.track-chip.unplayed .track-chip-count {
+  color: var(--text-muted);
+  opacity: 0.75;
 }
 
 .card-info {

@@ -312,9 +312,19 @@ function updateCardInPlace(card, album, idx) {
   if (expandedSection && expandedSection.classList.contains('active')) {
     const tracksContainer = card.querySelector('.tracks-list-grid');
     if (tracksContainer) {
-      renderTrackChips(tracksContainer, album);
+      renderTrackChips(tracksContainer, card._albumData || album);
     }
   }
+}
+
+function getTrackPlayCount(listenedObj, title) {
+  if (!listenedObj || !title) return 0;
+  if (typeof listenedObj[title] === 'number') return listenedObj[title];
+  const lower = title.toLowerCase().trim();
+  for (const [k, v] of Object.entries(listenedObj)) {
+    if (k.toLowerCase().trim() === lower) return v;
+  }
+  return 0;
 }
 
 function renderTrackChips(tracksContainer, currentAlbum) {
@@ -324,16 +334,26 @@ function renderTrackChips(tracksContainer, currentAlbum) {
 
   tracksContainer.innerHTML = '';
 
+  const header = tracksContainer.parentElement ? tracksContainer.parentElement.querySelector('.album-tracks-header') : null;
+  if (header) {
+    if (hasAllTracks) {
+      header.textContent = `Album tracks (${currentAlbum.allTracks.length}):`;
+    } else {
+      const count = Object.keys(listenedObj).length || 1;
+      header.textContent = `Songs played (${count}):`;
+    }
+  }
+
   if (hasAllTracks) {
     currentAlbum.allTracks.forEach(title => {
-      const count = listenedObj[title] || 0;
+      const count = getTrackPlayCount(listenedObj, title);
       const chip = document.createElement('span');
       if (count > 0) {
         chip.className = 'track-chip listened';
-        chip.innerHTML = `<span>✓ ${escapeHtml(title)}</span> <span class="track-chip-count">${count}x</span>`;
+        chip.innerHTML = `<span>${escapeHtml(title)}</span> <span class="track-chip-count">${count}x</span>`;
       } else {
         chip.className = 'track-chip unplayed';
-        chip.innerHTML = `<span>○ ${escapeHtml(title)}</span>`;
+        chip.innerHTML = `<span>${escapeHtml(title)}</span> <span class="track-chip-count">0x</span>`;
       }
       tracksContainer.appendChild(chip);
     });
@@ -343,13 +363,13 @@ function renderTrackChips(tracksContainer, currentAlbum) {
       entries.forEach(([title, count]) => {
         const chip = document.createElement('span');
         chip.className = 'track-chip listened';
-        chip.innerHTML = `<span>✓ ${escapeHtml(title)}</span> <span class="track-chip-count">${count}x</span>`;
+        chip.innerHTML = `<span>${escapeHtml(title)}</span> <span class="track-chip-count">${count}x</span>`;
         tracksContainer.appendChild(chip);
       });
     } else {
       const chip = document.createElement('span');
       chip.className = 'track-chip listened';
-      chip.innerHTML = `<span>✓ ${escapeHtml(currentAlbum.album)}</span> <span class="track-chip-count">${currentAlbum.playCount || 1}x</span>`;
+      chip.innerHTML = `<span>${escapeHtml(currentAlbum.album)}</span> <span class="track-chip-count">${currentAlbum.playCount || 1}x</span>`;
       tracksContainer.appendChild(chip);
     }
   }
@@ -372,15 +392,13 @@ function wireAlbumCardEvents(card, album, cardId, idx) {
     if (isActive) {
       renderTrackChips(tracksContainer, currentAlbum);
 
-      // If full album tracklist has not been retrieved and albumBrowseId exists, fetch it
+      // If full album tracklist has not been retrieved and albumBrowseId exists, fetch it quietly in the background
       const hasAllTracks = Array.isArray(currentAlbum.allTracks) && currentAlbum.allTracks.length > 0;
       if (!hasAllTracks && currentAlbum.albumBrowseId) {
-        toggleBtn.textContent = 'Loading tracklist...';
         extBrowser.runtime.sendMessage({
           type: 'GET_ALBUM_DETAILS',
           payload: { album: currentAlbum.album, artist: currentAlbum.artist }
         }, (res) => {
-          toggleBtn.textContent = 'Hide Tracks';
           if (res && res.status === 'ok' && res.data) {
             const fullAlbum = res.data;
             card._albumData = fullAlbum;
@@ -464,8 +482,8 @@ function buildAlbumCard(album, idx) {
       </div>
     </div>
     <div class="album-card-expanded" id="${cardId}">
-      <div style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 600; margin-bottom: 6px;">
-        Songs played (${uniqueTracks}):
+      <div class="album-tracks-header" style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 600; margin-bottom: 6px;">
+        ${album.allTracks && album.allTracks.length > 0 ? `Album tracks (${album.allTracks.length}):` : `Songs played (${uniqueTracks}):`}
       </div>
       <div class="tracks-list-grid" id="${cardId}-tracks">
       </div>
