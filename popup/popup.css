@@ -151,6 +151,20 @@ body {
   transform: scale(1.08);
 }
 
+.counter-duration {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 3px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .stat-pills {
   display: flex;
   gap: 8px;
@@ -331,6 +345,13 @@ body {
   background: rgba(255, 0, 51, 0.1);
   padding: 2px 6px;
   border-radius: 8px;
+}
+
+.rank-count .star-mark {
+  color: #f5b301;
+  font-size: 13px;
+  vertical-align: -1px;
+  cursor: help;
 }
 
 .empty-state {

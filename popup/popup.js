@@ -7,6 +7,7 @@ const extBrowser = typeof browser !== 'undefined' ? browser : chrome;
 
 const elements = {
   totalPlays: document.getElementById('totalPlays'),
+  totalDuration: document.getElementById('totalDuration'),
   uniqueSongs: document.getElementById('uniqueSongs'),
   uniqueArtists: document.getElementById('uniqueArtists'),
   uniqueAlbums: document.getElementById('uniqueAlbums'),
@@ -66,6 +67,10 @@ function renderStats(stats) {
       elements.totalPlays.classList.add('bump');
       setTimeout(() => elements.totalPlays.classList.remove('bump'), 200);
     }
+  }
+
+  if (elements.totalDuration) {
+    elements.totalDuration.textContent = '⏱️ ' + (stats.formattedTotalTime || '0 min');
   }
 
   if (elements.uniqueSongs) elements.uniqueSongs.textContent = stats.uniqueSongsCount || 0;
@@ -155,12 +160,12 @@ function renderAlbumsList(items) {
     const li = document.createElement('li');
     li.className = 'ranked-item';
     const uniqueTracks = album.uniqueTracksCount || (album.tracksListened ? Object.keys(album.tracksListened).length : 1);
-    let playsLabel = '';
-    if (album.completePlays > 0) {
-      playsLabel = `★ Full (${album.completePlays}x) • ${album.playCount} ${album.playCount === 1 ? 'play' : 'plays'}`;
-    } else {
-      playsLabel = `${uniqueTracks} ${uniqueTracks === 1 ? 'song' : 'songs'} • ${album.playCount} ${album.playCount === 1 ? 'play' : 'plays'}`;
-    }
+    const isComplete = album.completePlays > 0;
+    const tracksLabel = `${uniqueTracks} ${uniqueTracks === 1 ? 'song' : 'songs'}`;
+    const playsCount = `${album.playCount} ${album.playCount === 1 ? 'play' : 'plays'}`;
+    const playsLabel = isComplete
+      ? `<span class="star-mark" title="Completed ${album.completePlays}x">★</span> ${tracksLabel} - ${playsCount}`
+      : `${tracksLabel} - ${playsCount}`;
 
     const cleanArtistName = cleanArtist(album.artist);
     const hasDistinctArtist = cleanArtistName && cleanArtistName.toLowerCase() !== (album.album || '').toLowerCase();
