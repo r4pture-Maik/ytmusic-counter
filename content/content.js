@@ -1,7 +1,7 @@
 /**
  * YTMusic Counter - Content Script
  * Tracks song plays, updates per-song counter badge in the player bar,
- * and detects start-to-finish album playback.
+ * and reports playback to the background worker.
  */
 
 (function () {
@@ -11,9 +11,6 @@
   let currentSongPlays = 0;
   let trackPlaybackTimer = null;
   const MIN_PLAY_TIME_MS = 5000; // Minimum active listening duration
-
-  // Album start-to-finish session tracker
-  let currentAlbumSession = null;
 
   console.log('[YTMusic Counter] Content script initialized.');
 
@@ -145,93 +142,109 @@
     return false;
   }
 
-  /**
-   * Finds the active queue index and total queue count
-   */
-  function getQueueStatus() {
-    const queueItems = document.querySelectorAll('ytmusic-player-queue-item');
-    if (!queueItems || queueItems.length === 0) return null;
 
-    let selectedIndex = -1;
-    queueItems.forEach((item, index) => {
-      if (item.hasAttribute('selected') || item.classList.contains('selected')) {
-        selectedIndex = index;
-      }
-    });
 
-    return {
-      total: queueItems.length,
-      currentIndex: selectedIndex
-    };
+  /* ==========================================================================
+     Continuous Listening Duration Tracker Module
+     ========================================================================== */
+  let activeMediaElement = null;
+  let lastMediaTime = null;
+  let bufferedDurationSeconds = 0;
+  const DURATION_FLUSH_THRESHOLD_SEC = 5;
+
+  function flushDurationBuffer() {
+    if (bufferedDurationSeconds < 1) return;
+    const track = getCurrentTrackInfo();
+    if (!track || !track.title) return;
+
+    const delta = Math.round(bufferedDurationSeconds);
+    bufferedDurationSeconds = 0;
+
+    try {
+      extBrowser.runtime.sendMessage({
+        type: 'TIME_LISTENED_TICK',
+        payload: {
+          songTitle: track.title,
+          songArtist: track.artist,
+          songAlbum: track.album,
+          isSingle: track.isSingle,
+          deltaSeconds: delta
+        }
+      });
+    } catch (_) {}
   }
 
-  /**
-   * Updates or checks the album start-to-finish tracker
-   */
-  function updateAlbumTracker(track) {
-    if (!track.album) {
-      currentAlbumSession = null;
+  function handleMediaTimeUpdate(event) {
+    const video = event.target;
+    if (!video) return;
+
+    // Validate that media is genuinely playing audio
+    if (video.paused || video.ended || video.playbackRate <= 0 || video.muted || video.volume === 0) {
+      lastMediaTime = video.currentTime;
       return;
     }
 
-    const queue = getQueueStatus();
-    if (!queue || queue.total <= 1) return;
-
-    // Check if URL or context indicates an album (e.g. OLAK5uy_ playlist)
-    const isAlbumContext = window.location.href.includes('OLAK5uy') || 
-                           window.location.href.includes('browse/MPREb') ||
-                           Boolean(track.album);
-
-    if (!isAlbumContext) return;
-
-    // If on track 0 (first track of album), start new session
-    if (queue.currentIndex === 0) {
-      currentAlbumSession = {
-        album: track.album,
-        artist: track.artist,
-        totalTracks: queue.total,
-        playedIndices: new Set([0])
-      };
-      console.log(`[YTMusic Counter] Started album session for "${track.album}" (${queue.total} tracks)`);
-      return;
-    }
-
-    // If an album session is active, verify continuous playback
-    if (currentAlbumSession) {
-      if (currentAlbumSession.album.toLowerCase() === track.album.toLowerCase()) {
-        if (queue.currentIndex >= 0) {
-          currentAlbumSession.playedIndices.add(queue.currentIndex);
+    const currentTime = video.currentTime;
+    if (typeof lastMediaTime === 'number') {
+      const delta = currentTime - lastMediaTime;
+      // Filter rapid scrubbing or seeking (ignore negative deltas or jumps > 2s)
+      if (delta > 0 && delta <= 2.0) {
+        bufferedDurationSeconds += delta;
+        if (bufferedDurationSeconds >= DURATION_FLUSH_THRESHOLD_SEC) {
+          flushDurationBuffer();
         }
-
-        // Check if all tracks in the album queue were played
-        if (currentAlbumSession.playedIndices.size >= currentAlbumSession.totalTracks) {
-          console.log(`[YTMusic Counter] Full album completed: "${currentAlbumSession.album}"!`);
-          extBrowser.runtime.sendMessage({
-            type: 'ALBUM_COMPLETED',
-            payload: {
-              album: currentAlbumSession.album,
-              artist: currentAlbumSession.artist
-            }
-          });
-          currentAlbumSession = null; // Session finished
-        }
-      } else {
-        // Switched to a different album/source, cancel album session
-        currentAlbumSession = null;
       }
     }
+    lastMediaTime = currentTime;
   }
+
+  function handleMediaRateChange() {
+    lastMediaTime = activeMediaElement ? activeMediaElement.currentTime : null;
+  }
+
+  function handleMediaSeeking() {
+    lastMediaTime = null; // reset anchor so scrub jump is not counted
+  }
+
+  function setupMediaElementListeners() {
+    const video = document.querySelector('video');
+    if (!video || video === activeMediaElement) return;
+
+    if (activeMediaElement) {
+      activeMediaElement.removeEventListener('timeupdate', handleMediaTimeUpdate);
+      activeMediaElement.removeEventListener('ratechange', handleMediaRateChange);
+      activeMediaElement.removeEventListener('seeking', handleMediaSeeking);
+      activeMediaElement.removeEventListener('seeked', handleMediaSeeking);
+      activeMediaElement.removeEventListener('pause', handleMediaRateChange);
+    }
+
+    activeMediaElement = video;
+    lastMediaTime = video.currentTime;
+
+    video.addEventListener('timeupdate', handleMediaTimeUpdate);
+    video.addEventListener('ratechange', handleMediaRateChange);
+    video.addEventListener('seeking', handleMediaSeeking);
+    video.addEventListener('seeked', handleMediaSeeking);
+    video.addEventListener('pause', handleMediaRateChange);
+  }
+
+  window.addEventListener('beforeunload', () => {
+    flushDurationBuffer();
+  });
 
   /**
    * Main observer callback whenever player bar updates
    */
   function checkTrackChange() {
+    setupMediaElementListeners();
     const track = getCurrentTrackInfo();
     if (!track || !track.title) return;
 
     const currentKey = `${track.title}:::${track.artist}`;
 
     if (currentKey !== lastTrackKey) {
+      flushDurationBuffer();
+      lastMediaTime = activeMediaElement ? activeMediaElement.currentTime : null;
       lastTrackKey = currentKey;
 
       if (trackPlaybackTimer) {
@@ -254,7 +267,6 @@
       trackPlaybackTimer = setTimeout(() => {
         if (lastTrackKey === currentKey && isPlaying()) {
           countSongPlay(track);
-          updateAlbumTracker(track);
         }
       }, MIN_PLAY_TIME_MS);
     }
@@ -451,6 +463,55 @@
       coverUrl = itemImg.src;
     }
 
+    // 5. Extract duration from fixed columns, subtitle, or formatted strings
+    let durationStr = '';
+    const fixedCols = item.querySelectorAll('.fixed-columns yt-formatted-string, .fixed-columns span, [has-fixed-columns] .fixed-columns');
+    for (const col of fixedCols) {
+      const text = (col.textContent || '').trim();
+      if (/^\d+:\d{2}(?::\d{2})?$/.test(text)) {
+        durationStr = text;
+        break;
+      }
+    }
+
+    if (!durationStr) {
+      const subtitleElem = item.querySelector('.secondary-flex-columns yt-formatted-string, yt-formatted-string.subtitle, .subtitle, .byline');
+      const subtitleText = subtitleElem ? subtitleElem.textContent.trim() : '';
+      if (subtitleText) {
+        const parts = subtitleText.split('•').map(p => p.trim()).filter(Boolean);
+        const durPart = parts.find(p => /^\d+:\d{2}(?::\d{2})?$/.test(p));
+        if (durPart) durationStr = durPart;
+      }
+    }
+
+    if (!durationStr) {
+      const strings = item.querySelectorAll('yt-formatted-string, span');
+      for (const el of strings) {
+        const text = (el.textContent || '').trim();
+        if (/^\d+:\d{2}(?::\d{2})?$/.test(text)) {
+          durationStr = text;
+          break;
+        }
+      }
+    }
+
+    let durationSeconds = 0;
+    if (durationStr) {
+      const match = durationStr.trim().match(/^(\d+):(\d{2})(?::(\d{2}))?$/);
+      if (match) {
+        if (match[3] !== undefined) {
+          const hours = parseInt(match[1], 10) || 0;
+          const minutes = parseInt(match[2], 10) || 0;
+          const seconds = parseInt(match[3], 10) || 0;
+          durationSeconds = hours * 3600 + minutes * 60 + seconds;
+        } else {
+          const minutes = parseInt(match[1], 10) || 0;
+          const seconds = parseInt(match[2], 10) || 0;
+          durationSeconds = minutes * 60 + seconds;
+        }
+      }
+    }
+
     return {
       title,
       artist: artist || 'Unknown Artist',
@@ -458,7 +519,9 @@
       albumBrowseId: albumBrowseId || '',
       isSingle: Boolean(isSingle),
       videoId,
-      coverUrl
+      coverUrl,
+      duration: durationStr,
+      durationSeconds
     };
   }
 
@@ -606,6 +669,14 @@
     if (window.location.search.includes('autostart=1')) {
       const force = window.location.search.includes('forceRescan=1');
       setTimeout(() => startHistoryScan(force), 1200);
+    } else {
+      // Check for storage-based autostart to bypass SPA navigation query param stripping
+      extBrowser.storage.local.get(['pendingAutostart'], (data) => {
+        if (data.pendingAutostart && Date.now() - data.pendingAutostart.time < 15000) {
+          extBrowser.storage.local.remove('pendingAutostart');
+          setTimeout(() => startHistoryScan(data.pendingAutostart.forceRescan), 1200);
+        }
+      });
     }
   }
 
@@ -614,14 +685,31 @@
     isScanning = true;
     idleScrollCount = 0;
     scannedTracks = [];
+    
+    extBrowser.runtime.sendMessage({ type: 'DEBUG_LOG', tag: 'SCANNER', message: 'startHistoryScan initiated.' }).catch(()=>{});
 
-    const isForce = forceRescan || window.location.search.includes('forceRescan=1');
+    // Clear any previous processed markers on DOM elements
+    document.querySelectorAll('[data-ytmc-processed]').forEach(el => {
+      delete el.dataset.ytmcProcessed;
+    });
+
+    let isForce = forceRescan || window.location.search.includes('forceRescan=1');
     if (!isForce) {
       try {
-        const syncData = await extBrowser.storage.local.get(['historySyncState']);
-        activeSyncState = (syncData && syncData.historySyncState) || null;
-      } catch (_) {
+        const syncData = await extBrowser.storage.local.get(['historySyncState', 'totalPlays', 'songs']);
+        const isStorageEmpty = (!syncData.totalPlays || syncData.totalPlays === 0) &&
+                               (!syncData.songs || Object.keys(syncData.songs).length === 0);
+
+        if (isStorageEmpty) {
+          activeSyncState = null;
+          isForce = true;
+          extBrowser.runtime.sendMessage({ type: 'DEBUG_LOG', tag: 'SCANNER', message: 'Storage empty, forcing full rescan.' }).catch(()=>{});
+        } else {
+          activeSyncState = (syncData && syncData.historySyncState) || null;
+        }
+      } catch (err) {
         activeSyncState = null;
+        extBrowser.runtime.sendMessage({ type: 'DEBUG_LOG', tag: 'SCANNER_ERR', message: 'Error checking storage: ' + err.message }).catch(()=>{});
       }
     } else {
       activeSyncState = null;
@@ -632,13 +720,18 @@
       : [];
 
     console.log('[YTMC Content] Starting scan. Force rescan:', isForce, 'Watermark size:', watermark.length);
+    extBrowser.runtime.sendMessage({ type: 'DEBUG_LOG', tag: 'SCANNER', message: `Starting scan loop. Force: ${isForce}, Watermark size: ${watermark.length}` }).catch(()=>{});
 
     const startBtn = document.getElementById('ytmc-start-scan-btn');
     const spinner = document.getElementById('ytmc-scan-spinner');
     const note = document.getElementById('ytmc-scan-note');
     const countEl = document.getElementById('ytmc-scan-count');
 
-    if (startBtn) startBtn.disabled = true;
+    if (startBtn) {
+      startBtn.disabled = true;
+      const span = startBtn.querySelector('span');
+      if (span) span.textContent = 'Sync in Progress...';
+    }
     if (spinner) spinner.style.display = 'block';
     if (countEl) countEl.textContent = '0';
     if (note) {
@@ -768,13 +861,13 @@
             count: scannedTracks.length,
             unique: uniqueCount,
             latestTrack: scannedTracks[scannedTracks.length - 1],
-            statusText: `Importing history baseline (${scannedTracks.length}/${MAX_HISTORY_SCAN_ITEMS})...`
+            statusText: `Importing history baseline (${scannedTracks.length} plays)...`
           }
         });
 
         if (scannedTracks.length >= MAX_HISTORY_SCAN_ITEMS) {
-          console.log(`[YTMC Content] Reached ${MAX_HISTORY_SCAN_ITEMS}-song history cap. Stopping.`);
-          stopAndSaveHistory(true, `Reached ${MAX_HISTORY_SCAN_ITEMS}-song limit`, scannedTracks, parsedItems);
+          console.log(`[YTMC Content] Reached history scan batch cap (${MAX_HISTORY_SCAN_ITEMS}). Stopping.`);
+          stopAndSaveHistory(true, 'Completed', scannedTracks, parsedItems);
           return;
         }
       }
@@ -821,9 +914,6 @@
     const spinner = document.getElementById('ytmc-scan-spinner');
     const note = document.getElementById('ytmc-scan-note');
 
-    if (startBtn) startBtn.disabled = false;
-    if (spinner) spinner.style.display = 'none';
-
     const tracksToImport = Array.isArray(newTracks) ? newTracks : scannedTracks;
 
     // Construct fresh watermark from top of the page
@@ -866,16 +956,29 @@
 
       const msg = activeSyncState ? 'All caught up! No new plays found.' : 'No tracks found in history.';
       if (note) note.textContent = msg;
-      extBrowser.storage.local.set({
+
+      const finishData = {
         scanProgress: {
           isScanning: false,
           count: 0,
           unique: 0,
           latestTrack: null,
           statusText: msg
-        },
-        historySyncState: newSyncState
-      });
+        }
+      };
+
+      if (activeSyncState) {
+        finishData.historySyncState = newSyncState;
+      }
+
+      extBrowser.storage.local.set(finishData);
+      
+      if (startBtn) {
+        startBtn.disabled = false;
+        const span = startBtn.querySelector('span');
+        if (span) span.textContent = '▶ Start Sync';
+      }
+      if (spinner) spinner.style.display = 'none';
       return;
     }
 
@@ -908,8 +1011,13 @@
       const displayLabel = importedCount === 1 ? '1 new play' : `${importedCount} new plays`;
 
       if (countEl) countEl.textContent = importedCount;
+      const reasonSuffix = (reason && !/200/i.test(reason) && reason !== 'Completed') ? ` (${reason})` : '';
       if (note) {
-        note.innerHTML = `<b>Success!</b> Synced ${displayLabel} (${reason || 'Completed'}).`;
+        note.textContent = '';
+        const boldNode = document.createElement('b');
+        boldNode.textContent = 'Success!';
+        note.appendChild(boldNode);
+        note.appendChild(document.createTextNode(` Synced ${displayLabel}${reasonSuffix}.`));
       }
 
       extBrowser.storage.local.set({
@@ -918,10 +1026,19 @@
           count: importedCount,
           unique: uniqueCount,
           latestTrack: null,
-          statusText: `Done! Synced ${displayLabel} (${reason || 'Completed'}).`
+          statusText: `Done! Synced ${displayLabel}${reasonSuffix}.`
         },
         historySyncState: newSyncState
       });
+      
+      const startBtn = document.getElementById('ytmc-start-scan-btn');
+      const spinner = document.getElementById('ytmc-scan-spinner');
+      if (startBtn) {
+        startBtn.disabled = false;
+        const span = startBtn.querySelector('span');
+        if (span) span.textContent = '▶ Start Sync';
+      }
+      if (spinner) spinner.style.display = 'none';
     });
   }
 
@@ -1040,7 +1157,8 @@
       const forceRescan = Boolean(message.forceRescan);
       console.log('[YTMC Content] Received START_HISTORY_SCAN. forceRescan =', forceRescan);
       if (!isHistoryPage()) {
-        window.location.href = `https://music.youtube.com/history?autostart=1${forceRescan ? '&forceRescan=1' : ''}`;
+        extBrowser.storage.local.set({ pendingAutostart: { time: Date.now(), forceRescan } });
+        window.location.href = 'https://music.youtube.com/history';
       } else {
         injectHistoryScannerOverlay();
         startHistoryScan(forceRescan);
@@ -1048,19 +1166,179 @@
       sendResponse({ status: 'ok' });
       return true;
     }
+
+    // Same-origin proxy for album tracklist downloads.
+    // Firefox attaches an `Origin: moz-extension://<uuid>` header to cross-origin
+    // POSTs issued from the background service worker, which YouTube Music answers
+    // with HTTP 403. Running the request here, inside the music.youtube.com page
+    // origin, makes it a plain same-origin call that returns HTTP 200.
+    if (message.type === 'FETCH_ALBUM_TRACKLIST') {
+      const browseId = message.browseId;
+      if (!browseId) {
+        sendResponse({ status: 'error', error: 'Missing browseId' });
+        return true;
+      }
+      fetchAlbumTracklistViaContentScript(browseId)
+        .then(result => sendResponse(result))
+        .catch(err => sendResponse({ status: 'error', error: (err && err.message) || String(err) }));
+      return true;
+    }
   });
+
+  /**
+   * Performs the `youtubei/v1/browse` POST from the page origin and parses the
+   * response into `{ totalTracks, trackTitles, coverUrl }`.
+   *
+   * Two things make this succeed where the service worker cannot:
+   *  1. The request is same-origin, so Firefox does not attach the
+   *     `Origin: moz-extension://<uuid>` header that YouTube answers with 403.
+   *  2. The page's live InnerTube context (current `clientVersion`, visitor data,
+   *     hl/gl) is reused. Newer browse ID namespaces such as `MPREb_` are
+   *     rejected with HTTP 400 when requested with a stale hardcoded version.
+   *
+   * @param {string} browseId Raw browse ID; normalization happens here so the
+   *                          background can pass the stored value verbatim.
+   * @returns {Promise<{status: string, data?: object, httpStatus?: number, rateLimited?: boolean, error?: string, usedPageContext?: boolean, bodyExcerpt?: string}>}
+   */
+  async function fetchAlbumTracklistViaContentScript(browseId) {
+    const shared = globalThis.YTMCShared;
+    if (!shared || typeof shared.extractTrackTitlesFromBrowse !== 'function') {
+      return { status: 'error', error: 'Shared browse parser unavailable in content script' };
+    }
+
+    const cleanId = browseId.startsWith('VL')
+      ? browseId
+      : (browseId.startsWith('OLAK5uy') ? `VL${browseId}` : browseId);
+
+    const pageContext = typeof shared.getPageInnerTubeContext === 'function'
+      ? shared.getPageInnerTubeContext()
+      : null;
+
+    let res;
+    try {
+      res = await fetch('https://music.youtube.com/youtubei/v1/browse?prettyPrint=false', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(shared.buildBrowseRequestBody(cleanId, pageContext)),
+        credentials: 'same-origin'
+      });
+    } catch (err) {
+      return {
+        status: 'error',
+        error: `Network error while browsing ${cleanId}: ${(err && err.message) || err}`,
+        usedPageContext: Boolean(pageContext)
+      };
+    }
+
+    if (!res.ok) {
+      // Read the body: YouTube puts the actual reason there ("Precondition check
+      // failed", "Malformed request", ...), which the status code alone never says.
+      let bodyExcerpt = '';
+      try {
+        bodyExcerpt = (await res.text()).slice(0, 300);
+      } catch (_) {}
+
+      const reason = extractBrowseErrorReason(bodyExcerpt);
+      console.warn('[YTMC Content] Album browse failed', res.status, 'for', cleanId, bodyExcerpt);
+      return {
+        status: 'error',
+        httpStatus: res.status,
+        rateLimited: res.status === 429 || res.status === 403,
+        usedPageContext: Boolean(pageContext),
+        error: `HTTP ${res.status}${res.statusText ? ' ' + res.statusText : ''} from youtubei/v1/browse` +
+               (reason ? ` - ${reason}` : '') +
+               ` (context: ${pageContext ? 'live page ytcfg' : 'stale WEB_REMIX fallback'})`,
+        bodyExcerpt
+      };
+    }
+
+    let json;
+    try {
+      json = await res.json();
+    } catch (err) {
+      return { status: 'error', httpStatus: res.status, error: `Malformed JSON in browse response: ${(err && err.message) || err}` };
+    }
+
+    const trackTitles = shared.extractTrackTitlesFromBrowse(json.contents);
+    const coverUrl = shared.findBestThumbnail(json);
+
+    if (trackTitles.length === 0 && !coverUrl) {
+      // A 200 with an empty shell usually means the ID resolved to a page we do
+      // not understand (e.g. a library shelf rather than a real album).
+      return {
+        status: 'empty',
+        usedPageContext: Boolean(pageContext),
+        error: `HTTP 200 but no tracks or artwork for ${cleanId} (browseIdType: ${describeBrowseId(cleanId)})`
+      };
+    }
+
+    return {
+      status: 'ok',
+      usedPageContext: Boolean(pageContext),
+      data: { totalTracks: trackTitles.length || null, trackTitles, coverUrl }
+    };
+  }
+
+  /**
+   * Pulls the human-readable reason out of a YouTube InnerTube error body.
+   * @param {string} body
+   * @returns {string}
+   */
+  function extractBrowseErrorReason(body) {
+    if (!body) return '';
+    try {
+      const parsed = JSON.parse(body);
+      const err = parsed && parsed.error;
+      if (!err) return body.slice(0, 160);
+      const parts = [];
+      if (err.status) parts.push(err.status);
+      if (err.message) parts.push(err.message);
+      if (Array.isArray(err.errors) && err.errors.length > 0) {
+        for (const e of err.errors) {
+          if (e && e.reason && parts.indexOf(e.reason) === -1) parts.push(e.reason);
+        }
+      }
+      return parts.join(' | ') || err.status || err.message || body.slice(0, 160);
+    } catch (_) {
+      return String(body).slice(0, 160);
+    }
+  }
+
+  /**
+   * Classifies a browse ID so "no tracks" can be told apart from "wrong kind of ID".
+   * @param {string} id
+   * @returns {string}
+   */
+  function describeBrowseId(id) {
+    if (!id) return 'empty';
+    if (id.startsWith('OLAK5uy')) return 'auto-generated album playlist';
+    if (id.startsWith('VLPL')) return 'user playlist';
+    if (id.startsWith('MPREb_')) return 'library album page (MPREb_)';
+    if (id.startsWith('VL')) return 'playlist';
+    return 'unknown';
+  }
 
   // Live sync with storage changes (e.g. after history sync or background play updates)
   if (extBrowser.storage && extBrowser.storage.onChanged) {
     extBrowser.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName === 'local' && changes.songs) {
-        const track = getCurrentTrackInfo();
-        if (track && track.title) {
-          const key = `${track.title.trim().toLowerCase()}:::${(track.artist || 'Unknown Artist').trim().toLowerCase()}`;
-          const updatedSongs = changes.songs.newValue || {};
-          if (updatedSongs[key] && typeof updatedSongs[key].playCount === 'number') {
-            currentSongPlays = updatedSongs[key].playCount;
-            updateSongBadge(currentSongPlays, true);
+      if (areaName === 'local') {
+        if (changes.songs) {
+          const track = getCurrentTrackInfo();
+          if (track && track.title) {
+            const key = `${track.title.trim().toLowerCase()}:::${(track.artist || 'Unknown Artist').trim().toLowerCase()}`;
+            const updatedSongs = changes.songs.newValue || {};
+            if (updatedSongs[key] && typeof updatedSongs[key].playCount === 'number') {
+              currentSongPlays = updatedSongs[key].playCount;
+              updateSongBadge(currentSongPlays, true);
+            }
+          }
+        }
+        
+        if (changes.scanProgress && changes.scanProgress.newValue) {
+          const progress = changes.scanProgress.newValue;
+          const note = document.getElementById('ytmc-scan-note');
+          if (note && progress.statusText) {
+            note.textContent = progress.statusText;
           }
         }
       }

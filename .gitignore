@@ -33,4 +33,4 @@ temp/
 scratch/
 
 # Local documentation & wiki
-.wiki/
+.*

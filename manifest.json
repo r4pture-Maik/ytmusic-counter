@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "YTMusic Counter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Tracks and counts your played tracks and listening stats on YouTube Music.",
-  "author": "r4pture-maik and antigravity/gemini",
+  "author": "r4pture-maik",
   "browser_specific_settings": {
     "gecko": {
       "id": "ytmusic-counter@example.com",
@@ -17,12 +17,9 @@
   ],
   "host_permissions": [
     "*://music.youtube.com/*",
-    "https://*.musicbrainz.org/*",
-    "https://*.coverartarchive.org/*",
     "https://*.googleusercontent.com/*",
     "https://*.ggpht.com/*",
-    "https://*.ytimg.com/*",
-    "https://*.archive.org/*"
+    "https://*.ytimg.com/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",
@@ -34,14 +31,15 @@
   },
   "background": {
     "scripts": [
-      "background/thumbnail-cache.js",
       "background/background.js"
-    ]
+    ],
+    "service_worker": "background/background.js",
+    "type": "module"
   },
   "content_scripts": [
     {
       "matches": ["*://music.youtube.com/*"],
-      "js": ["content/content.js"],
+      "js": ["shared/browse-parse.js", "content/content.js"],
       "css": ["content/content.css"],
       "run_at": "document_idle"
     }

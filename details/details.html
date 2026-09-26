@@ -76,6 +76,10 @@
               <span class="mini-label">Different Songs</span>
               <span class="mini-value" id="uniqueSongsStat">0</span>
             </div>
+            <div class="mini-stat-card">
+              <span class="mini-label">Time Listened</span>
+              <span class="mini-value" id="totalTimeStat">0 min</span>
+            </div>
           </div>
         </div>
 
@@ -193,11 +197,6 @@
                   <span class="sync-dot" id="historySyncDot"></span>
                   <span id="historySyncText">Checking sync status...</span>
                 </div>
-
-                <label class="force-rescan-label" for="forceRescanCheckbox">
-                  <input type="checkbox" id="forceRescanCheckbox">
-                  <span>Re-scan full history from the beginning</span>
-                </label>
               </div>
               <button type="button" class="btn-primary-action" id="launchHistoryScannerBtn">
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
@@ -265,9 +264,20 @@
               <span class="debug-tag" id="debugSyncBoundaryStatus">Boundary: Checking...</span>
               <span class="debug-tag" id="debugScanStatus">Scanner: Idle</span>
             </div>
+            <div class="debug-status-bar">
+              <span class="debug-tag" id="enrichmentStatusTag">Tracklists: Idle</span>
+              <label class="debug-tag" for="enrichmentMinTracksInput" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+                Min. tracks to batch-fetch
+                <input type="number" id="enrichmentMinTracksInput" min="1" max="10" step="1" value="2"
+                       style="width:56px;padding:2px 6px;border-radius:6px;border:1px solid var(--border-color, #444);background:var(--input-bg, #1c1c1c);color:inherit;font:inherit;" />
+              </label>
+              <button type="button" class="btn-debug-action" id="fetchMissingTracklistsBtn">Fetch Missing Tracklists</button>
+            </div>
             <pre class="debug-console" id="debugConsole">Diagnostics initialized. Activity and error logs will appear here in real time.</pre>
           </div>
-        <!-- Media & Cover Art Cache Section -->
+        </div>
+
+        <!-- Cover Art Data Section -->
         <div class="config-section">
           <h3 class="config-section-title">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
@@ -275,7 +285,7 @@
               <circle cx="8.5" cy="8.5" r="1.5"/>
               <polyline points="21 15 16 10 5 21"/>
             </svg>
-            Cover Art &amp; Media Cache
+            Cover Art Data
           </h3>
           <div class="card cache-card">
             <div class="cache-card-info">
@@ -304,6 +314,46 @@
                 <span>Clear Cover Cache</span>
               </button>
               <span class="cache-op-message" id="thumbnailCacheOpMessage" style="display:none;"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Data Backup & Portability Section -->
+        <div class="config-section">
+          <h3 class="config-section-title">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Data Backup &amp; Portability
+          </h3>
+          <div class="card cache-card">
+            <div class="cache-card-info">
+              <div>
+                <h4 class="cache-card-title">1-Click Library Export &amp; Restore</h4>
+                <p class="cache-card-desc">Export your complete play counts, listening durations, and album completions as a standardized, versioned JSON bundle, or import an existing backup.</p>
+              </div>
+            </div>
+            <div class="cache-card-actions" style="margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+              <button type="button" class="btn-cache-action" id="exportLibraryJsonBtn">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                <span>Export Complete Library (.json)</span>
+              </button>
+              <label for="importLibraryJsonInput" class="btn-cache-action" style="cursor: pointer; margin: 0; display: inline-flex; align-items: center; gap: 6px;">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <span>Import Library (.json)</span>
+              </label>
+              <input type="file" id="importLibraryJsonInput" accept=".json,application/json" style="display: none;">
+              <span class="cache-op-message" id="importExportStatusMessage" style="display:none;"></span>
             </div>
           </div>
         </div>
@@ -418,7 +468,6 @@
     </main>
   </div>
 
-  <script src="../background/thumbnail-cache.js"></script>
-  <script src="details.js"></script>
+  <script type="module" src="details.js"></script>
 </body>
 </html>

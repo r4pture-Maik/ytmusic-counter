@@ -4,7 +4,12 @@
  * and a 3-step confirmation flow for erasing all extension data.
  */
 
+import { normalizeTrackTitle, matchTrackPlayCount } from '../background/scoring.js';
+import { thumbnailCache } from '../background/thumbnails.js';
+
 const extBrowser = typeof browser !== 'undefined' ? browser : chrome;
+
+const YOUTUBE_MUSIC_HISTORY_URL = 'https://music.youtube.com/history';
 
 // DOM Elements Cache
 const elements = {
@@ -17,6 +22,7 @@ const elements = {
   // Stats in Details Panel
   totalSongsListened: document.getElementById('totalSongsListened'),
   uniqueSongsStat: document.getElementById('uniqueSongsStat'),
+  totalTimeStat: document.getElementById('totalTimeStat'),
   uniqueArtistsStat: document.getElementById('uniqueArtistsStat'),
   trackedAlbumsStat: document.getElementById('trackedAlbumsStat'),
   singlesStat: document.getElementById('singlesStat'),
@@ -34,6 +40,11 @@ const elements = {
   refreshThumbnailCacheStatsBtn: document.getElementById('refreshThumbnailCacheStatsBtn'),
   clearThumbnailCacheBtn: document.getElementById('clearThumbnailCacheBtn'),
   thumbnailCacheOpMessage: document.getElementById('thumbnailCacheOpMessage'),
+
+  // Data Backup & Portability
+  exportLibraryJsonBtn: document.getElementById('exportLibraryJsonBtn'),
+  importLibraryJsonInput: document.getElementById('importLibraryJsonInput'),
+  importExportStatusMessage: document.getElementById('importExportStatusMessage'),
 
   // 3-Step Wipe Container & Views
   wipeStep0: document.getElementById('wipeStep0'),
@@ -63,7 +74,6 @@ const elements = {
   historySyncPill: document.getElementById('historySyncPill'),
   historySyncDot: document.getElementById('historySyncDot'),
   historySyncText: document.getElementById('historySyncText'),
-  forceRescanCheckbox: document.getElementById('forceRescanCheckbox'),
 
   // Diagnostics & Debug Elements
   toggleDebugOptions: document.getElementById('toggleDebugOptions'),
@@ -76,6 +86,9 @@ const elements = {
   debugStorageStatus: document.getElementById('debugStorageStatus'),
   debugSyncBoundaryStatus: document.getElementById('debugSyncBoundaryStatus'),
   debugScanStatus: document.getElementById('debugScanStatus'),
+  enrichmentStatusTag: document.getElementById('enrichmentStatusTag'),
+  enrichmentMinTracksInput: document.getElementById('enrichmentMinTracksInput'),
+  fetchMissingTracklistsBtn: document.getElementById('fetchMissingTracklistsBtn'),
   debugConsole: document.getElementById('debugConsole')
 };
 
@@ -156,7 +169,10 @@ async function fetchStatsDirectlyFromStorage() {
       }
     }
     const singlesCount = Object.values(songs).filter(s => s.isSingle || !s.album).length;
-    const completedAlbumsCount = Object.values(cleanedAlbums).reduce((sum, a) => sum + (a.completePlays || 0), 0);
+    const completedAlbumsCount = Object.values(cleanedAlbums).reduce(
+      (sum, a) => sum + (a.completePlays || 0),
+      0
+    );
 
     const sortedAlbums = Object.values(cleanedAlbums)
       .sort((a, b) => ((b.completePlays || 0) * 100 + (b.playCount || 0)) - ((a.completePlays || 0) * 100 + (a.playCount || 0)));
@@ -205,6 +221,9 @@ function renderStats(stats) {
   if (elements.uniqueSongsStat) {
     elements.uniqueSongsStat.textContent = (stats.uniqueSongsCount || 0).toLocaleString();
   }
+  if (elements.totalTimeStat) {
+    elements.totalTimeStat.textContent = stats.formattedTotalTime || '0 min';
+  }
   if (elements.uniqueArtistsStat) {
     elements.uniqueArtistsStat.textContent = (stats.uniqueArtistsCount || 0).toLocaleString();
   }
@@ -226,18 +245,19 @@ function renderStats(stats) {
 }
 
 function computeAlbumStatusText(album, uniqueTracks, completePlays) {
-  if (completePlays > 0) {
+  const effectivePlays = completePlays || 0;
+  if (effectivePlays > 0) {
     let nextProgress = 0;
     if (album.allTracks && album.totalTracks) {
       for (const t of album.allTracks) {
-        const c = (album.tracksListened && album.tracksListened[t]) || 0;
-        if (c > completePlays) nextProgress++;
+        const c = matchTrackPlayCount(t, album.tracksListened || {});
+        if (c > effectivePlays) nextProgress++;
       }
     }
     if (nextProgress > 0 && album.totalTracks) {
-      return `★ Completed (${completePlays}x) • Next: ${nextProgress}/${album.totalTracks}`;
+      return `★ Completed (${effectivePlays}x) • Next: ${nextProgress}/${album.totalTracks}`;
     } else {
-      return `★ Completed (${completePlays}x)`;
+      return `★ Completed (${effectivePlays}x)`;
     }
   } else if (album.totalTracks) {
     return `${uniqueTracks}/${album.totalTracks} songs (${Math.round((uniqueTracks / album.totalTracks) * 100)}%)`;
@@ -250,7 +270,7 @@ function updateCardInPlace(card, album, idx) {
   card._albumData = album;
   const uniqueTracks = album.uniqueTracksCount || (album.tracksListened ? Object.keys(album.tracksListened).length : 1);
   const completePlays = album.completePlays || 0;
-  const isCompleted = Boolean(completePlays > 0 || (album.totalTracks && album.totalTracks > 1 && uniqueTracks >= album.totalTracks));
+  const isCompleted = Boolean(completePlays > 0);
   const statusText = computeAlbumStatusText(album, uniqueTracks, completePlays);
 
   const cleanArtistName = (album.artist || '').split('•')[0].trim();
@@ -301,7 +321,7 @@ function updateCardInPlace(card, album, idx) {
 
     // If card doesn't have an image yet and now a cached image is available
     const albumKey = card.dataset.albumKey;
-    const memUrl = typeof thumbnailCache !== 'undefined' ? thumbnailCache.getMemoryObjectUrl(albumKey) : null;
+    const memUrl = thumbnailCache.getMemoryObjectUrl(albumKey);
     if (memUrl && !container.querySelector('.album-cover-img')) {
       applyCoverToCard(container, memUrl, album.album);
     }
@@ -315,16 +335,6 @@ function updateCardInPlace(card, album, idx) {
       renderTrackChips(tracksContainer, card._albumData || album);
     }
   }
-}
-
-function getTrackPlayCount(listenedObj, title) {
-  if (!listenedObj || !title) return 0;
-  if (typeof listenedObj[title] === 'number') return listenedObj[title];
-  const lower = title.toLowerCase().trim();
-  for (const [k, v] of Object.entries(listenedObj)) {
-    if (k.toLowerCase().trim() === lower) return v;
-  }
-  return 0;
 }
 
 function renderTrackChips(tracksContainer, currentAlbum) {
@@ -346,7 +356,7 @@ function renderTrackChips(tracksContainer, currentAlbum) {
 
   if (hasAllTracks) {
     currentAlbum.allTracks.forEach(title => {
-      const count = getTrackPlayCount(listenedObj, title);
+      const count = matchTrackPlayCount(title, listenedObj);
       const chip = document.createElement('span');
       if (count > 0) {
         chip.className = 'track-chip listened';
@@ -408,17 +418,21 @@ function wireAlbumCardEvents(card, album, cardId, idx) {
             if (pill && fullAlbum.totalTracks) {
               const uniqueTracks = fullAlbum.uniqueTracksCount || Object.keys(fullAlbum.tracksListened || {}).length;
               const pct = Math.round((uniqueTracks / fullAlbum.totalTracks) * 100);
-              pill.textContent = `${uniqueTracks}/${fullAlbum.totalTracks} songs (${pct}%)`;
-              if (uniqueTracks >= fullAlbum.totalTracks && fullAlbum.totalTracks > 1) {
+              const isCompleted = Boolean((fullAlbum.completePlays || 0) > 0);
+              if (isCompleted) {
                 pill.classList.add('completed');
-                pill.textContent = `★ 100% Completed (${uniqueTracks}/${fullAlbum.totalTracks})`;
+                pill.textContent = `★ Completed (${fullAlbum.completePlays}x)`;
                 const badge = card.querySelector('.album-icon-badge');
                 if (badge) {
                   badge.classList.add('completed');
                   badge.textContent = '★';
                 }
+              } else {
+                pill.classList.remove('completed');
+                pill.textContent = `${uniqueTracks}/${fullAlbum.totalTracks} songs (${pct}%)`;
               }
             }
+            loadStatsDebounced(100);
           }
         });
       }
@@ -436,7 +450,7 @@ function buildAlbumCard(album, idx) {
 
   const uniqueTracks = album.uniqueTracksCount || (album.tracksListened ? Object.keys(album.tracksListened).length : 1);
   const completePlays = album.completePlays || 0;
-  const isCompleted = Boolean(completePlays > 0 || (album.totalTracks && album.totalTracks > 1 && uniqueTracks >= album.totalTracks));
+  const isCompleted = Boolean(completePlays > 0);
   const statusText = computeAlbumStatusText(album, uniqueTracks, completePlays);
 
   const cleanArtistName = (album.artist || '').split('•')[0].trim();
@@ -447,7 +461,7 @@ function buildAlbumCard(album, idx) {
   const artId = `album-art-${idx}`;
 
   // Check if thumbnail Object URL is already available in memory
-  const memoryCoverUrl = typeof thumbnailCache !== 'undefined' ? thumbnailCache.getMemoryObjectUrl(albumKey) : null;
+  const memoryCoverUrl = thumbnailCache.getMemoryObjectUrl(albumKey);
   const initialCoverUrl = memoryCoverUrl || (album.coverUrl && !album.coverUrl.startsWith('http') ? album.coverUrl : null);
 
   const artworkHtml = initialCoverUrl
@@ -591,45 +605,6 @@ function makeAlbumKey(album, artist) {
   return `${(album || '').trim().toLowerCase()}:::${(artist || '').trim().toLowerCase()}`;
 }
 
-async function fetchCoverFromCoverArtArchive(album, artist) {
-  if (!album) return null;
-  const cleanAlb = (album || '').replace(/\s*[\(\[].*?[\)\]]/g, '').trim();
-  const cleanArt = (artist || '').split('•')[0].split(/[,&/]| feat/i)[0].trim();
-  if (!cleanAlb) return null;
-
-  try {
-    const query = cleanArt
-      ? `release:"${cleanAlb}" AND artist:"${cleanArt}"`
-      : `release:"${cleanAlb}"`;
-    const mbUrl = `https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(query)}&fmt=json&limit=3`;
-    const mbRes = await fetch(mbUrl, {
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'YTMusicCounter/1.0.0 (https://github.com/r4pture-Maik/ytmusic-counter)'
-      }
-    });
-
-    if (mbRes.ok) {
-      const mbData = await mbRes.json();
-      if (mbData.releases && mbData.releases.length > 0) {
-        for (const rel of mbData.releases) {
-          if (rel['cover-art-archive'] && rel['cover-art-archive'].front) {
-            return `https://coverartarchive.org/release/${rel.id}/front-250.jpg`;
-          }
-        }
-        for (const rel of mbData.releases) {
-          if (rel['release-group'] && rel['release-group'].id) {
-            return `https://coverartarchive.org/release-group/${rel['release-group'].id}/front-250.jpg`;
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('[YTMusic Counter] Details CAA lookup error:', err);
-  }
-  return null;
-}
-
 function applyCoverToCard(container, url, albumName) {
   if (!container || !url) return;
   container.classList.remove('loading');
@@ -670,7 +645,7 @@ async function fetchAlbumCover(album, idx, cardEl) {
   requestedCoverKeys.add(key);
 
   // Check persistent negative cache
-  if (typeof thumbnailCache !== 'undefined' && thumbnailCache.isThumbnailFailed(key)) {
+  if (thumbnailCache.isThumbnailFailed(key)) {
     return;
   }
 
@@ -679,15 +654,13 @@ async function fetchAlbumCover(album, idx, cardEl) {
     : document.getElementById(`album-art-${idx}`);
 
   // Step 1: Check IndexedDB
-  if (typeof thumbnailCache !== 'undefined') {
-    try {
-      const cachedUrl = await thumbnailCache.getThumbnailObjectUrl(key);
-      if (cachedUrl) {
-        applyCoverToCard(container, cachedUrl, album.album);
-        return;
-      }
-    } catch (_) {}
-  }
+  try {
+    const cachedUrl = await thumbnailCache.getThumbnailObjectUrl(key);
+    if (cachedUrl) {
+      applyCoverToCard(container, cachedUrl, album.album);
+      return;
+    }
+  } catch (_) {}
 
   if (container) {
     container.classList.add('loading');
@@ -695,15 +668,14 @@ async function fetchAlbumCover(album, idx, cardEl) {
 
   // Step 2: If album already has remote coverUrl, downscale and cache into IndexedDB
   if (album.coverUrl && album.coverUrl.startsWith('http')) {
-    if (typeof thumbnailCache !== 'undefined') {
-      try {
-        const cached = await thumbnailCache.cacheRemoteThumbnail(key, album.coverUrl);
-        if (cached && cached.objectUrl) {
-          applyCoverToCard(container, cached.objectUrl, album.album);
-          return;
-        }
-      } catch (_) {}
-    }
+    try {
+      const cached = await thumbnailCache.cacheRemoteThumbnail(key, album.coverUrl);
+      if (cached && cached.objectUrl) {
+        applyCoverToCard(container, cached.objectUrl, album.album);
+        refreshThumbnailCacheStats();
+        return;
+      }
+    } catch (_) {}
     applyCoverToCard(container, album.coverUrl, album.album);
     return;
   }
@@ -730,44 +702,21 @@ async function fetchAlbumCover(album, idx, cardEl) {
     resolvedUrl = res;
   } catch (_) {}
 
-  // Step 4: Cover Art Archive fallback
-  if (!resolvedUrl) {
-    try {
-      resolvedUrl = await fetchCoverFromCoverArtArchive(album.album, album.artist);
-      if (resolvedUrl) {
-        const data = await extBrowser.storage.local.get(['albums']);
-        const albumsDict = data.albums || {};
-        if (albumsDict[key]) {
-          albumsDict[key].coverUrl = resolvedUrl;
-        } else {
-          const matchKey = Object.keys(albumsDict).find(k => k.toLowerCase() === key.toLowerCase());
-          if (matchKey) {
-            albumsDict[matchKey].coverUrl = resolvedUrl;
-          }
-        }
-        await extBrowser.storage.local.set({ albums: albumsDict });
-      }
-    } catch (_) {}
-  }
-
   if (resolvedUrl) {
     album.coverUrl = resolvedUrl;
     let displayUrl = resolvedUrl;
-    if (typeof thumbnailCache !== 'undefined') {
-      try {
-        const cached = await thumbnailCache.cacheRemoteThumbnail(key, resolvedUrl);
-        if (cached && cached.objectUrl) {
-          displayUrl = cached.objectUrl;
-        }
-      } catch (_) {}
-    }
+    try {
+      const cached = await thumbnailCache.cacheRemoteThumbnail(key, resolvedUrl);
+      if (cached && cached.objectUrl) {
+        displayUrl = cached.objectUrl;
+        refreshThumbnailCacheStats();
+      }
+    } catch (_) {}
     applyCoverToCard(container, displayUrl, album.album);
   } else {
     // Negative caching: permanently mark as failed so it NEVER loops
     if (container) container.classList.remove('loading');
-    if (typeof thumbnailCache !== 'undefined') {
-      thumbnailCache.markThumbnailFailed(key).catch(() => {});
-    }
+    thumbnailCache.markThumbnailFailed(key).catch(() => {});
     // Note: Do NOT delete key from requestedCoverKeys!
   }
 }
@@ -889,31 +838,36 @@ function setupWipeDataWorkflow() {
 }
 
 async function executeDataWipe() {
+  const emptyState = {
+    totalPlays: 0,
+    totalListeningSeconds: 0,
+    songs: {},
+    artists: {},
+    albums: {},
+    currentTrack: null,
+    historySyncState: null,
+    scanProgress: null
+  };
+
   try {
     // 1. Send reset message to background service
     extBrowser.runtime.sendMessage({ type: 'RESET_STATS' }, async (response) => {
       // Direct storage reset as foolproof fallback
       await extBrowser.storage.local.clear();
-      await extBrowser.storage.local.set({
-        totalPlays: 0,
-        songs: {},
-        artists: {},
-        albums: {},
-        currentTrack: null
-      });
+      await extBrowser.storage.local.set(emptyState);
 
       // 2. Clear local media cache
-      if (typeof thumbnailCache !== 'undefined' && thumbnailCache.clearThumbnailCache) {
-        try {
-          await thumbnailCache.clearThumbnailCache();
-        } catch (_) {}
-      }
+      try {
+        await thumbnailCache.clearThumbnailCache();
+      } catch (_) {}
       refreshThumbnailCacheStats();
 
       // 3. Return UI to step 0
       setWipeStep(0);
 
-      // 4. Show success alert
+      // 4. Update sync status UI
+      renderHistorySyncStatus(null);
+      renderScanProgress(null);
       showSuccessAlert();
 
       // 5. Reload stats immediately
@@ -923,20 +877,14 @@ async function executeDataWipe() {
     console.error('[Details] Error during data wipe:', err);
     // Direct fallback
     await extBrowser.storage.local.clear();
-    await extBrowser.storage.local.set({
-      totalPlays: 0,
-      songs: {},
-      artists: {},
-      albums: {},
-      currentTrack: null
-    });
-    if (typeof thumbnailCache !== 'undefined' && thumbnailCache.clearThumbnailCache) {
-      try {
-        await thumbnailCache.clearThumbnailCache();
-      } catch (_) {}
-    }
+    await extBrowser.storage.local.set(emptyState);
+    try {
+      await thumbnailCache.clearThumbnailCache();
+    } catch (_) {}
     refreshThumbnailCacheStats();
     setWipeStep(0);
+    renderHistorySyncStatus(null);
+    renderScanProgress(null);
     showSuccessAlert();
     loadStats();
   }
@@ -955,6 +903,14 @@ function hideSuccessAlert() {
   elements.deleteSuccessAlert.style.display = 'none';
 }
 
+function sanitizeStatusText(text) {
+  if (!text) return '';
+  return text
+    .replace(/\s*\(\s*reached\s*200[\s\-]song\s*limit\s*\)/gi, '')
+    .replace(/\s*reached\s*200[\s\-]song\s*limit/gi, '')
+    .trim();
+}
+
 /* ==========================================================================
    Real-Time Storage Synchronization & Live Scanner Feedback
    ========================================================================== */
@@ -966,8 +922,14 @@ function renderScanProgress(scanProgress) {
     return;
   }
 
+  const cleanStatus = sanitizeStatusText(scanProgress.statusText);
+
   if (scanProgress.isScanning) {
     elements.scannerLivePanel.style.display = 'flex';
+    if (elements.launchHistoryScannerBtn) {
+      elements.launchHistoryScannerBtn.disabled = true;
+      elements.launchHistoryScannerBtn.textContent = 'Sync in Progress...';
+    }
     if (elements.scannerConfigSpinner) elements.scannerConfigSpinner.classList.remove('done');
     if (elements.scannerLiveBadge) {
       elements.scannerLiveBadge.textContent = 'Syncing History...';
@@ -983,11 +945,15 @@ function renderScanProgress(scanProgress) {
         const t = scanProgress.latestTrack;
         elements.scannerImportingTrack.textContent = `🎵 "${t.title}" • ${t.artist || 'Unknown'}${t.album ? ` (${t.album})` : ''}`;
       } else {
-        elements.scannerImportingTrack.textContent = scanProgress.statusText || 'Finding songs in history...';
+        elements.scannerImportingTrack.textContent = cleanStatus || 'Finding songs in history...';
       }
     }
   } else if (scanProgress.statusText) {
     elements.scannerLivePanel.style.display = 'flex';
+    if (elements.launchHistoryScannerBtn) {
+      elements.launchHistoryScannerBtn.disabled = false;
+      elements.launchHistoryScannerBtn.textContent = 'Start Sync';
+    }
     if (elements.scannerConfigSpinner) elements.scannerConfigSpinner.classList.add('done');
     if (elements.scannerLiveBadge) {
       elements.scannerLiveBadge.textContent = scanProgress.count === 0 ? 'Up to Date' : 'Completed';
@@ -998,7 +964,7 @@ function renderScanProgress(scanProgress) {
       elements.scannerLiveCounts.textContent = plays === 1 ? '1 play synced' : `${plays} plays synced`;
     }
     if (elements.scannerImportingTrack) {
-      elements.scannerImportingTrack.textContent = scanProgress.statusText;
+      elements.scannerImportingTrack.textContent = cleanStatus;
     }
   } else {
     elements.scannerLivePanel.style.display = 'none';
@@ -1089,21 +1055,22 @@ if (extBrowser.storage && extBrowser.storage.onChanged) {
 /* ==========================================================================
    Thumbnail Database & Cache Settings
    ========================================================================== */
+let refreshThumbnailCacheStatsSeq = 0;
 async function refreshThumbnailCacheStats() {
   if (!elements.thumbnailCacheCount || !elements.thumbnailCacheSize) return;
-  if (typeof thumbnailCache === 'undefined') {
-    elements.thumbnailCacheCount.textContent = '0 covers';
-    elements.thumbnailCacheSize.textContent = '(0 KB)';
-    return;
-  }
 
+  const seq = ++refreshThumbnailCacheStatsSeq;
   try {
     const stats = await thumbnailCache.getThumbnailStats();
-    elements.thumbnailCacheCount.textContent = `${stats.count} covers`;
-    elements.thumbnailCacheSize.textContent = `(${stats.formattedSize})`;
+    if (seq === refreshThumbnailCacheStatsSeq) {
+      elements.thumbnailCacheCount.textContent = `${stats.count} covers`;
+      elements.thumbnailCacheSize.textContent = `(${stats.formattedSize})`;
+    }
   } catch (err) {
-    elements.thumbnailCacheCount.textContent = 'Error';
-    elements.thumbnailCacheSize.textContent = '';
+    if (seq === refreshThumbnailCacheStatsSeq) {
+      elements.thumbnailCacheCount.textContent = 'Error';
+      elements.thumbnailCacheSize.textContent = '';
+    }
   }
 }
 
@@ -1128,19 +1095,17 @@ function setupThumbnailCacheSettings() {
 
   if (elements.clearThumbnailCacheBtn) {
     elements.clearThumbnailCacheBtn.addEventListener('click', async () => {
-      if (typeof thumbnailCache !== 'undefined') {
-        elements.clearThumbnailCacheBtn.disabled = true;
-        try {
-          await thumbnailCache.clearThumbnailCache();
-          requestedCoverKeys.clear();
-          await refreshThumbnailCacheStats();
-          showCacheOpMessage('Cover cache cleared!');
-          renderAlbumsBreakdown();
-        } catch (err) {
-          showCacheOpMessage('Clear error: ' + err.message);
-        } finally {
-          elements.clearThumbnailCacheBtn.disabled = false;
-        }
+      elements.clearThumbnailCacheBtn.disabled = true;
+      try {
+        await thumbnailCache.clearThumbnailCache();
+        requestedCoverKeys.clear();
+        await refreshThumbnailCacheStats();
+        showCacheOpMessage('Cover cache cleared!');
+        renderAlbumsBreakdown();
+      } catch (err) {
+        showCacheOpMessage('Clear error: ' + err.message);
+      } finally {
+        elements.clearThumbnailCacheBtn.disabled = false;
       }
     });
   }
@@ -1150,10 +1115,77 @@ function setupThumbnailCacheSettings() {
 
 // Memory cleanup on page unload
 window.addEventListener('beforeunload', () => {
-  if (typeof thumbnailCache !== 'undefined' && thumbnailCache.revokeAllObjectUrls) {
-    thumbnailCache.revokeAllObjectUrls();
-  }
+  thumbnailCache.revokeAllObjectUrls();
 });
+
+function showImportExportMessage(msg, isError = false) {
+  if (!elements.importExportStatusMessage) return;
+  elements.importExportStatusMessage.textContent = msg;
+  elements.importExportStatusMessage.style.color = isError ? 'var(--accent-red)' : 'var(--accent-green, #10b981)';
+  elements.importExportStatusMessage.style.display = 'inline';
+  setTimeout(() => {
+    if (elements.importExportStatusMessage) {
+      elements.importExportStatusMessage.style.display = 'none';
+    }
+  }, 4500);
+}
+
+function setupDataBackupWorkflow() {
+  if (elements.exportLibraryJsonBtn) {
+    elements.exportLibraryJsonBtn.addEventListener('click', async () => {
+      try {
+        elements.exportLibraryJsonBtn.disabled = true;
+        extBrowser.runtime.sendMessage({ type: 'EXPORT_DATA_V2' }, (response) => {
+          elements.exportLibraryJsonBtn.disabled = false;
+          if (extBrowser.runtime.lastError || !response || response.status !== 'ok') {
+            showImportExportMessage('Export failed: ' + (extBrowser.runtime.lastError?.message || response?.error), true);
+            return;
+          }
+          const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(response.data, null, 2));
+          const dateStr = new Date().toISOString().split('T')[0];
+          const downloadAnchor = document.createElement('a');
+          downloadAnchor.setAttribute('href', dataStr);
+          downloadAnchor.setAttribute('download', `ytmusic-counter-export-${dateStr}.json`);
+          document.body.appendChild(downloadAnchor);
+          downloadAnchor.click();
+          downloadAnchor.remove();
+          showImportExportMessage('Library exported successfully!');
+        });
+      } catch (err) {
+        elements.exportLibraryJsonBtn.disabled = false;
+        showImportExportMessage('Export error: ' + err.message, true);
+      }
+    });
+  }
+
+  if (elements.importLibraryJsonInput) {
+    elements.importLibraryJsonInput.addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        try {
+          const parsed = JSON.parse(event.target.result);
+          extBrowser.runtime.sendMessage({ type: 'IMPORT_DATA_V2', payload: parsed }, (res) => {
+            if (extBrowser.runtime.lastError || !res || res.status !== 'ok') {
+              showImportExportMessage('Import error: ' + (extBrowser.runtime.lastError?.message || res?.error), true);
+              return;
+            }
+            const { songsCount, artistsCount, albumsCount } = res.data;
+            showImportExportMessage(`Imported ${songsCount} songs, ${artistsCount} artists, ${albumsCount} albums!`);
+            loadStats();
+          });
+        } catch (parseErr) {
+          showImportExportMessage('Invalid JSON format: ' + parseErr.message, true);
+        } finally {
+          elements.importLibraryJsonInput.value = '';
+        }
+      };
+      reader.readAsText(file);
+    });
+  }
+}
 
 // Initialization on DOMContentLoaded
 document.addEventListener('DOMContentLoaded', () => {
@@ -1161,6 +1193,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupWipeDataWorkflow();
   setupHistoryScannerLauncher();
   setupThumbnailCacheSettings();
+  setupDataBackupWorkflow();
   setupDebugSection();
   if (elements.refreshAlbumsBreakdownBtn) {
     elements.refreshAlbumsBreakdownBtn.addEventListener('click', loadStats);
@@ -1276,6 +1309,91 @@ function setupDebugSection() {
       if (elements.debugConsole) elements.debugConsole.textContent = 'Debug console cleared.';
     });
   }
+
+  // Album tracklist enrichment: threshold config + manual backfill tool
+  setupEnrichmentControls();
+
+  // Listen for remote logs
+  extBrowser.runtime.onMessage.addListener((message) => {
+    if (message && message.type === 'DEBUG_LOG') {
+      debugLog(message.tag || 'REMOTE', message.message, message.data);
+    }
+  });
+}
+
+/**
+ * Wires the "Fetch Missing Tracklists" button and the batch-threshold input.
+ *
+ * Manual runs deliberately bypass the threshold: every album still missing an
+ * official tracklist gets resolved, paced by the background throttled queue.
+ */
+function setupEnrichmentControls() {
+  if (elements.enrichmentMinTracksInput) {
+    elements.enrichmentMinTracksInput.addEventListener('change', async () => {
+      const value = Number(elements.enrichmentMinTracksInput.value);
+      if (!Number.isFinite(value) || value < 1) {
+        debugLog('ENRICH', 'Ignoring invalid threshold value; reloading the saved one.');
+        await loadEnrichmentConfig();
+        return;
+      }
+      try {
+        const response = await extBrowser.runtime.sendMessage({ type: 'SET_ENRICHMENT_CONFIG', payload: { minUniqueTracks: value } });
+        if (response && response.status === 'ok') {
+          elements.enrichmentMinTracksInput.value = response.data.minUniqueTracks;
+          debugLog('ENRICH', `Batch-fetch threshold set to ${response.data.minUniqueTracks} unique track(s).`);
+        } else {
+          debugLog('ENRICH_ERROR', 'Failed to save threshold:', response && response.error);
+        }
+      } catch (err) {
+        debugLog('ENRICH_ERROR', 'Failed to save threshold:', err.message || err);
+      }
+    });
+  }
+
+  if (elements.fetchMissingTracklistsBtn) {
+    elements.fetchMissingTracklistsBtn.addEventListener('click', async () => {
+      const btn = elements.fetchMissingTracklistsBtn;
+      btn.disabled = true;
+      const originalLabel = btn.textContent;
+      btn.textContent = 'Fetching...';
+      debugLog('ENRICH', 'Manual tracklist backfill requested. Open a music.youtube.com tab for best results.');
+
+      try {
+        const response = await extBrowser.runtime.sendMessage({ type: 'FETCH_MISSING_TRACKLISTS', payload: { force: true } });
+        if (response && response.status === 'ok') {
+          const r = response.data;
+          debugLog('ENRICH', `Backfill finished: ${r.updated}/${r.total} tracklists resolved, ${r.failed} unresolved.`);
+          if (elements.enrichmentStatusTag) {
+            elements.enrichmentStatusTag.textContent = `Tracklists: ${r.updated}/${r.total} resolved`;
+          }
+          loadStats();
+        } else {
+          debugLog('ENRICH_ERROR', 'Backfill failed:', (response && response.error) || 'unknown error');
+        }
+      } catch (err) {
+        debugLog('ENRICH_ERROR', 'Backfill failed:', err.message || err);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalLabel;
+      }
+    });
+  }
+
+  loadEnrichmentConfig();
+}
+
+/**
+ * Reads the current enrichment config from the background and reflects it in the UI.
+ */
+async function loadEnrichmentConfig() {
+  try {
+    const response = await extBrowser.runtime.sendMessage({ type: 'GET_ENRICHMENT_CONFIG' });
+    if (response && response.status === 'ok' && elements.enrichmentMinTracksInput) {
+      elements.enrichmentMinTracksInput.value = response.data.minUniqueTracks;
+    }
+  } catch (err) {
+    debugLog('ENRICH_ERROR', 'Could not read enrichment config:', err.message || err);
+  }
 }
 
 async function refreshDebugStatusBar(data) {
@@ -1310,10 +1428,9 @@ function setupHistoryScannerLauncher() {
       statusText: 'Connecting to YouTube Music...'
     });
 
-    const forceRescan = Boolean(elements.forceRescanCheckbox && elements.forceRescanCheckbox.checked);
-    debugLog('LAUNCHER', `Force full rescan enabled: ${forceRescan}`);
+    await extBrowser.storage.local.set({ pendingAutostart: { time: Date.now(), forceRescan: false } });
+    const historyUrl = YOUTUBE_MUSIC_HISTORY_URL;
 
-    const historyUrl = `https://music.youtube.com/history?autostart=1${forceRescan ? '&forceRescan=1' : ''}`;
     try {
       debugLog('LAUNCHER', 'Querying tabs for *://music.youtube.com/* ...');
       const tabs = await extBrowser.tabs.query({ url: '*://music.youtube.com/*' });
@@ -1326,17 +1443,15 @@ function setupHistoryScannerLauncher() {
         if (targetTab.windowId) {
           await extBrowser.windows.update(targetTab.windowId, { focused: true });
         }
-        // Try messaging content script directly in case it is already on the page
+        
+        // Try messaging content script directly in case it is already on the page and didn't reload
         setTimeout(() => {
-          debugLog('LAUNCHER', `Sending START_HISTORY_SCAN message (forceRescan=${forceRescan}) to tab ${targetTab.id}...`);
-          extBrowser.tabs.sendMessage(targetTab.id, { type: 'START_HISTORY_SCAN', forceRescan }, (res) => {
-            if (extBrowser.runtime.lastError) {
-              debugLog('LAUNCHER', 'Tab navigating; autostart parameter will trigger on page load.');
-            } else {
-              debugLog('LAUNCHER', 'START_HISTORY_SCAN message acknowledged:', res);
+          extBrowser.tabs.sendMessage(targetTab.id, { type: 'START_HISTORY_SCAN', forceRescan: false }, (res) => {
+            if (!extBrowser.runtime.lastError) {
+              extBrowser.storage.local.remove('pendingAutostart'); // Handled immediately
             }
           });
-        }, 1000);
+        }, 500);
       } else {
         debugLog('LAUNCHER', `No existing tab found. Creating new tab with ${historyUrl}...`);
         const newTab = await extBrowser.tabs.create({ url: historyUrl });
