@@ -26,8 +26,9 @@ const DIST = join(ROOT, "dist");
 
 /** Directories copied verbatim into every bundle. */
 const BUNDLE_DIRS = ["background", "content", "details", "popup", "shared", "icons"];
-/** Extra single files. */
-const BUNDLE_FILES = ["manifest.json"];
+/** Extra single files. LICENSE is required by its own terms: the notice must
+ *  travel with every copy, and the uploaded archive is a copy. */
+const BUNDLE_FILES = ["manifest.json", "LICENSE"];
 
 /** Chrome ignores background.scripts in MV3 only from 121 on; before that it
  *  refuses to load the extension entirely. */

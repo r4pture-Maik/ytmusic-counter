@@ -36,8 +36,7 @@ ytmusic-counter/
 │   ├── popup.html             # Extension popup with tabs for Songs, Artists, and Albums
 │   ├── popup.css              # Dark theme styling (YouTube Music aesthetic)
 │   └── popup.js               # Tab logic, real-time counters & storage sync
-├── icons/
-│   └── icon.svg               # Extension vector icon
+├── icons/                     # 16/32/48/128 PNG icons
 └── README.md                  # Documentation & setup guide
 ```
 
