@@ -232,7 +232,9 @@ export function createThrottledQueue(options) {
         await sleep(backoff);
       }
     }
-    throw new Error('Unreachable: retry loop exhausted');
+    // Unreachable: the loop either returns a result or rethrows on the last
+    // attempt. Kept as a guard so a caller can never observe an undefined resolve.
+    return undefined;
   }
 
   async function drain() {

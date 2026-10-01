@@ -7,6 +7,27 @@
 (function () {
   const extBrowser = typeof browser !== 'undefined' ? browser : chrome;
 
+  /**
+   * Sends a runtime message without caring about the reply.
+   *
+   * Chrome's `runtime.sendMessage` returns `undefined` (it is callback-based),
+   * while Firefox's returns a Promise. Calling `.catch()` directly on the Chrome
+   * return value throws `TypeError: Cannot read properties of undefined`, so the
+   * return value has to be feature-detected.
+   *
+   * @param {object} message
+   */
+  function sendMessageIgnoringReply(message) {
+    try {
+      const maybePromise = extBrowser.runtime.sendMessage(message);
+      if (maybePromise && typeof maybePromise.catch === 'function') {
+        maybePromise.catch(() => {});
+      }
+    } catch (_) {
+      // Background not ready; diagnostics are best-effort.
+    }
+  }
+
   let lastTrackKey = null;
   let currentSongPlays = 0;
   let trackPlaybackTimer = null;
@@ -160,18 +181,16 @@
     const delta = Math.round(bufferedDurationSeconds);
     bufferedDurationSeconds = 0;
 
-    try {
-      extBrowser.runtime.sendMessage({
-        type: 'TIME_LISTENED_TICK',
-        payload: {
-          songTitle: track.title,
-          songArtist: track.artist,
-          songAlbum: track.album,
-          isSingle: track.isSingle,
-          deltaSeconds: delta
-        }
-      });
-    } catch (_) {}
+    sendMessageIgnoringReply({
+      type: 'TIME_LISTENED_TICK',
+      payload: {
+        songTitle: track.title,
+        songArtist: track.artist,
+        songAlbum: track.album,
+        isSingle: track.isSingle,
+        deltaSeconds: delta
+      }
+    });
   }
 
   function handleMediaTimeUpdate(event) {
@@ -228,8 +247,14 @@
     video.addEventListener('pause', handleMediaRateChange);
   }
 
-  window.addEventListener('beforeunload', () => {
+  // pagehide + visibilitychange are the reliable flush points for a single-page
+  // app. `beforeunload` frequently does not fire on in-app navigation, which used
+  // to drop up to one flush threshold (5s) of listening time per track change.
+  window.addEventListener('pagehide', () => {
     flushDurationBuffer();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushDurationBuffer();
   });
 
   /**
@@ -308,7 +333,28 @@
 
     const label = count === 1 ? 'play' : 'plays';
     badge.title = `You have listened to this song ${count} ${label}`;
-    badge.innerHTML = `<span class="ytmc-icon">🎵</span> <span class="ytmc-count ${animate ? 'pulse' : ''}">${count}</span> <span class="ytmc-label">${label}</span>`;
+
+    // Built from DOM nodes instead of innerHTML: no interpolated value reaches the
+    // HTML parser, and the markup is not re-parsed on every count update.
+    badge.textContent = '';
+
+    const icon = document.createElement('span');
+    icon.className = 'ytmc-icon';
+    icon.textContent = '🎵';
+
+    const countEl = document.createElement('span');
+    countEl.className = animate ? 'ytmc-count pulse' : 'ytmc-count';
+    countEl.textContent = String(count);
+
+    const labelEl = document.createElement('span');
+    labelEl.className = 'ytmc-label';
+    labelEl.textContent = label;
+
+    badge.appendChild(icon);
+    badge.appendChild(document.createTextNode(' '));
+    badge.appendChild(countEl);
+    badge.appendChild(document.createTextNode(' '));
+    badge.appendChild(labelEl);
   }
 
   /* ==========================================================================
@@ -686,7 +732,7 @@
     idleScrollCount = 0;
     scannedTracks = [];
     
-    extBrowser.runtime.sendMessage({ type: 'DEBUG_LOG', tag: 'SCANNER', message: 'startHistoryScan initiated.' }).catch(()=>{});
+    sendMessageIgnoringReply({ type: 'DEBUG_LOG', tag: 'SCANNER', message: 'startHistoryScan initiated.' });
 
     // Clear any previous processed markers on DOM elements
     document.querySelectorAll('[data-ytmc-processed]').forEach(el => {
@@ -703,13 +749,13 @@
         if (isStorageEmpty) {
           activeSyncState = null;
           isForce = true;
-          extBrowser.runtime.sendMessage({ type: 'DEBUG_LOG', tag: 'SCANNER', message: 'Storage empty, forcing full rescan.' }).catch(()=>{});
+          sendMessageIgnoringReply({ type: 'DEBUG_LOG', tag: 'SCANNER', message: 'Storage empty, forcing full rescan.' });
         } else {
           activeSyncState = (syncData && syncData.historySyncState) || null;
         }
       } catch (err) {
         activeSyncState = null;
-        extBrowser.runtime.sendMessage({ type: 'DEBUG_LOG', tag: 'SCANNER_ERR', message: 'Error checking storage: ' + err.message }).catch(()=>{});
+        sendMessageIgnoringReply({ type: 'DEBUG_LOG', tag: 'SCANNER_ERR', message: 'Error checking storage: ' + err.message });
       }
     } else {
       activeSyncState = null;
@@ -720,7 +766,7 @@
       : [];
 
     console.log('[YTMC Content] Starting scan. Force rescan:', isForce, 'Watermark size:', watermark.length);
-    extBrowser.runtime.sendMessage({ type: 'DEBUG_LOG', tag: 'SCANNER', message: `Starting scan loop. Force: ${isForce}, Watermark size: ${watermark.length}` }).catch(()=>{});
+    sendMessageIgnoringReply({ type: 'DEBUG_LOG', tag: 'SCANNER', message: `Starting scan loop. Force: ${isForce}, Watermark size: ${watermark.length}` });
 
     const startBtn = document.getElementById('ytmc-start-scan-btn');
     const spinner = document.getElementById('ytmc-scan-spinner');
@@ -751,7 +797,15 @@
       }
     });
 
+    // Guards against overlapping ticks: the body of this callback awaits storage
+    // reads, so without this a slow await lets the next interval fire a second
+    // full parse (and a second watermark boundary search) concurrently.
+    let scanTickInFlight = false;
+
     scanInterval = setInterval(async () => {
+      if (scanTickInFlight) return;
+      scanTickInFlight = true;
+      try {
       const itemElements = Array.from(document.querySelectorAll('ytmusic-responsive-list-item-renderer'));
       if (itemElements.length === 0) {
         return;
@@ -901,6 +955,9 @@
       } else {
         idleScrollCount = 0;
       }
+      } finally {
+        scanTickInFlight = false;
+      }
     }, 650);
   }
 
@@ -1043,8 +1100,11 @@
   }
 
   let harvestTimeout = null;
+  let harvestDone = false;
+
   async function harvestHistoryCovers() {
     if (!isHistoryPage()) return;
+    if (harvestDone) return;
     try {
       const items = Array.from(document.querySelectorAll('ytmusic-responsive-list-item-renderer'));
       if (items.length === 0) return;
@@ -1054,7 +1114,12 @@
       const missingKeys = new Set(
         Object.keys(albums).filter(k => !albums[k].coverUrl)
       );
-      if (missingKeys.size === 0) return;
+      // Nothing left to find: stop re-parsing up to 200 DOM items (and re-reading
+      // the whole albums dictionary) every 1.5s for the rest of the visit.
+      if (missingKeys.size === 0) {
+        harvestDone = true;
+        return;
+      }
 
       const coversToBackfill = [];
       const seen = new Set();
@@ -1101,6 +1166,8 @@
       if (isScanning) {
         stopAndSaveHistory(false, 'Navigated away from history');
       }
+      // Leaving the history page means new albums can appear again later.
+      harvestDone = false;
       const existing = document.getElementById('ytmc-history-scanner-overlay');
       if (existing) {
         existing.remove();
@@ -1116,13 +1183,45 @@
     }
   }
 
-  // Setup MutationObserver
-  const observer = new MutationObserver(() => {
-    checkTrackChange();
-    handleRouteChange();
-    if (isHistoryPage()) {
-      scheduleHarvestHistoryCovers();
+  // Track-change work is coalesced to one run per animation frame. The player bar
+  // subtree mutates constantly (progress bar ticks, artwork swaps), and every
+  // mutation used to trigger a full getCurrentTrackInfo() scrape of ~10 selectors.
+  let trackChangeQueued = false;
+  function scheduleTrackChange() {
+    if (trackChangeQueued) return;
+    trackChangeQueued = true;
+    const run = () => {
+      trackChangeQueued = false;
+      checkTrackChange();
+    };
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(run);
+    } else {
+      setTimeout(run, 50);
     }
+  }
+
+  // Only the player bar is observed. Falling back to document.body with
+  // `subtree: true` made every mutation anywhere on the page (virtual scrolling
+  // through 200 history rows, animations) re-scrape the player bar.
+  const playerBarObserver = new MutationObserver(scheduleTrackChange);
+
+  function observePlayerBar() {
+    const playerBar = document.querySelector('ytmusic-player-bar');
+    if (!playerBar) return false;
+    playerBarObserver.observe(playerBar, { childList: true, subtree: true, characterData: true });
+    return true;
+  }
+
+  // Lightweight fallback: watch the body's direct children only, so the player bar
+  // can be picked up when YouTube Music mounts it late, without subscribing to the
+  // whole document.
+  const bodyObserver = new MutationObserver(() => {
+    if (observePlayerBar()) {
+      bodyObserver.disconnect();
+      return;
+    }
+    handleRouteChange();
   });
 
   // Route and page change observers
@@ -1132,8 +1231,9 @@
   window.addEventListener('popstate', handleRouteChange);
   window.addEventListener('hashchange', handleRouteChange);
 
-  // Polling route check every 500ms for SPA navigations
-  setInterval(handleRouteChange, 500);
+  // Last-resort poll for SPA navigations that fire no event. 1500ms instead of
+  // 500ms: handleRouteChange is a no-op unless the href actually changed.
+  setInterval(handleRouteChange, 1500);
 
   // Runtime message listener
   extBrowser.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1210,9 +1310,20 @@
       ? browseId
       : (browseId.startsWith('OLAK5uy') ? `VL${browseId}` : browseId);
 
-    const pageContext = typeof shared.getPageInnerTubeContext === 'function'
-      ? shared.getPageInnerTubeContext()
-      : null;
+    // `getPageInnerTubeContext` only resolves in Firefox: Chrome's isolated world
+    // cannot see the page's `ytcfg` expando, so we go through the MAIN-world
+    // bridge (shared/page-context.js) over postMessage. Both paths are wrapped so
+    // a missing bridge degrades to the stale WEB_REMIX fallback instead of throwing.
+    let pageContext = null;
+    try {
+      if (typeof shared.resolvePageInnerTubeContext === 'function') {
+        pageContext = await shared.resolvePageInnerTubeContext();
+      } else if (typeof shared.getPageInnerTubeContext === 'function') {
+        pageContext = shared.getPageInnerTubeContext();
+      }
+    } catch (_) {
+      pageContext = null;
+    }
 
     let res;
     try {
@@ -1346,13 +1457,11 @@
   }
 
   function init() {
-    const target = document.querySelector('ytmusic-player-bar') || document.body;
-    if (target) {
-      observer.observe(target, { childList: true, subtree: true, characterData: true });
-      checkTrackChange();
-    } else {
-      setTimeout(init, 800);
+    if (!observePlayerBar()) {
+      // Player bar not mounted yet: watch the body's direct children for it.
+      if (document.body) bodyObserver.observe(document.body, { childList: true });
     }
+    checkTrackChange();
     checkHistoryRoute();
   }
 

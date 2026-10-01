@@ -7,6 +7,12 @@
 import { cleanAlbumsDict, calculateCompletePlays } from './scoring.js';
 import { formatDuration } from './duration.js';
 
+/**
+ * Storage key holding duration accrued before its play was registered.
+ * Drained by handleTrackPlayed in background.js.
+ */
+export const PENDING_DURATIONS_KEY = 'pendingDurations';
+
 // Consistent dictionary key generators
 export function makeSongKey(title, artist) {
   return `${(title || '').trim().toLowerCase()}:::${(artist || '').trim().toLowerCase()}`;
@@ -23,8 +29,41 @@ export function makeAlbumKey(album, artist) {
 // In-memory cache for compiled statistics
 let statsCache = null;
 
+/**
+ * Rejects dictionary keys that would reach `Object.prototype` when used as a
+ * plain-object property. An imported backup is untrusted input, and assigning
+ * `obj['__proto__'] = value` mutates the object's prototype rather than storing
+ * a record.
+ *
+ * @param {string} key
+ * @returns {boolean}
+ */
+export function isDangerousKey(key) {
+  return key === '__proto__' || key === 'constructor' || key === 'prototype';
+}
+
 export function invalidateStatsCache() {
   statsCache = null;
+}
+
+/**
+ * Serializes every read-modify-write cycle on the shared dictionaries.
+ *
+ * `storage.local` has no atomic read-modify-write, and the extension writes
+ * `songs`/`artists`/`albums` from several independent paths (play registration,
+ * duration ticks every 5s, history import, cover backfill, tracklist writes).
+ * Without this lock two overlapping handlers read the same snapshot and the
+ * second `set` silently discards the first one's increment.
+ *
+ * The chain is never rejected, so one failing task cannot poison every task
+ * queued behind it. Tasks must NOT call each other while holding the lock.
+ */
+let storageLockChain = Promise.resolve();
+
+export function withStorageLock(task) {
+  const run = storageLockChain.then(() => task());
+  storageLockChain = run.then(() => {}, () => {});
+  return run;
 }
 
 /**
@@ -89,12 +128,18 @@ export function sanitizeStorageData(data) {
   let modified = false;
   const rawSongs = (data && data.songs) || {};
   const rawAlbums = (data && data.albums) || {};
+  const rawArtists = (data && data.artists) || {};
   const cleanSongs = {};
   const cleanAlbums = {};
 
   // 1. Sanitize songs
   for (const [key, song] of Object.entries(rawSongs)) {
     if (!song || !song.title) continue;
+    if (isDangerousKey(key)) {
+      // An untrusted import could otherwise assign to Object.prototype.
+      modified = true;
+      continue;
+    }
     let title = song.title.trim();
     let artist = (song.artist || '').trim();
     let album = (song.album || '').trim();
@@ -149,8 +194,28 @@ export function sanitizeStorageData(data) {
   }
 
   // 2. Sanitize albums
+  // Index built once so the artist-recovery lookups below stay O(1) instead of
+  // scanning every song for every listened track of every album.
+  const songsByTitle = new Map();
+  const songsByAlbum = new Map();
+  for (const song of Object.values(cleanSongs)) {
+    const lowerTitle = song.title.toLowerCase();
+    if (!songsByTitle.has(lowerTitle)) songsByTitle.set(lowerTitle, song);
+
+    if (song.album) {
+      const lowerAlbum = song.album.toLowerCase();
+      if (!songsByAlbum.has(lowerAlbum)) songsByAlbum.set(lowerAlbum, song);
+    }
+  }
+
+  // 2. Sanitize albums
   for (const [key, alb] of Object.entries(rawAlbums)) {
     if (!alb || !alb.album) continue;
+    if (isDangerousKey(key)) {
+      // Same as above: never let imported data reach Object.prototype.
+      modified = true;
+      continue;
+    }
     let albumName = alb.album.trim();
     let albumArtist = (alb.artist || '').trim();
     const durationSeconds = Math.max(0, Math.round(alb.durationSeconds || 0));
@@ -162,18 +227,18 @@ export function sanitizeStorageData(data) {
 
     // If albumArtist is identical to albumName, recover true artist from cleanSongs
     if (!albumArtist || albumArtist.toLowerCase() === albumName.toLowerCase()) {
-      const listenedKeys = Object.keys(alb.tracksListened || {});
+      const lowerAlbumName = albumName.toLowerCase();
       let matchedArtist = '';
-      for (const tTitle of listenedKeys) {
-        const matchingSong = Object.values(cleanSongs).find(s => s.title.toLowerCase() === tTitle.toLowerCase());
-        if (matchingSong && matchingSong.artist && matchingSong.artist.toLowerCase() !== albumName.toLowerCase()) {
+      for (const tTitle of Object.keys(alb.tracksListened || {})) {
+        const matchingSong = songsByTitle.get(tTitle.trim().toLowerCase());
+        if (matchingSong && matchingSong.artist && matchingSong.artist.toLowerCase() !== lowerAlbumName) {
           matchedArtist = matchingSong.artist;
           break;
         }
       }
       if (!matchedArtist) {
-        const songWithAlbum = Object.values(cleanSongs).find(s => s.album && s.album.toLowerCase() === albumName.toLowerCase());
-        if (songWithAlbum && songWithAlbum.artist && songWithAlbum.artist.toLowerCase() !== albumName.toLowerCase()) {
+        const songWithAlbum = songsByAlbum.get(lowerAlbumName);
+        if (songWithAlbum && songWithAlbum.artist && songWithAlbum.artist.toLowerCase() !== lowerAlbumName) {
           matchedArtist = songWithAlbum.artist;
         }
       }
@@ -245,7 +310,7 @@ export function sanitizeStorageData(data) {
     });
   }
 
-  const oldArtistCount = Object.keys(data.artists || {}).length;
+  const oldArtistCount = Object.keys(rawArtists).length;
   const newArtistCount = Object.keys(cleanArtists).length;
   if (oldArtistCount !== newArtistCount) modified = true;
 
@@ -337,16 +402,9 @@ export async function getStats(extBrowser) {
   const sanitized = sanitizeStorageData(data);
   const songs = sanitized.songs;
   const artists = sanitized.artists;
-  const albums = cleanAlbumsDict(sanitized.albums, extBrowser);
+  // Pure read: persistence of any repair is the caller's job, under the lock.
+  const albums = cleanAlbumsDict(sanitized.albums);
   const totalListeningSeconds = Math.max(0, Math.round(data.totalListeningSeconds || 0));
-
-  if (sanitized.modified) {
-    extBrowser.storage.local.set({
-      songs: sanitized.songs,
-      artists: sanitized.artists,
-      albums: sanitized.albums
-    }).catch(() => {});
-  }
 
   // Sort top items for each category (Top 3)
   const topSongs = Object.values(songs)
@@ -372,6 +430,15 @@ export async function getStats(extBrowser) {
     0
   );
 
+  // `allTracks` is intentionally stripped from the broadcast payload. It is by
+  // far the heaviest field (one entry per track of every album) and is only
+  // needed once a card is expanded, which already re-fetches it through
+  // GET_ALBUM_DETAILS. Shipping it made every GET_STATS message hundreds of KB.
+  const allAlbums = sortedAlbums.map(album => {
+    const { allTracks, ...lightweight } = album;
+    return lightweight;
+  });
+
   statsCache = {
     totalPlays: data.totalPlays || 0,
     totalListeningSeconds,
@@ -385,7 +452,7 @@ export async function getStats(extBrowser) {
     topSongs,
     topArtists,
     topAlbums,
-    allAlbums: sortedAlbums
+    allAlbums
   };
 
   return statsCache;
@@ -433,11 +500,12 @@ export async function resetStats(extBrowser, thumbnailCache = null) {
  * @param {string} [extensionVersion='1.1.0']
  * @returns {object} ExportBundleV2
  */
-export function createExportBundleV2(rawStorage, extensionVersion = '1.1.0') {
-  const sanitized = sanitizeStorageData(rawStorage || {});
-  const totalPlays = Math.max(0, Math.round(rawStorage.totalPlays || 0));
-  const totalListeningSeconds = Math.max(0, Math.round(rawStorage.totalListeningSeconds || 0));
-  const historySync = rawStorage.historySyncState || {};
+export function createExportBundleV2(rawStorage, extensionVersion) {
+  const source = (rawStorage && typeof rawStorage === 'object') ? rawStorage : {};
+  const sanitized = sanitizeStorageData(source);
+  const totalPlays = Math.max(0, Math.round(source.totalPlays || 0));
+  const totalListeningSeconds = Math.max(0, Math.round(source.totalListeningSeconds || 0));
+  const historySync = source.historySyncState || {};
 
   const cleanSongs = {};
   for (const [key, s] of Object.entries(sanitized.songs || {})) {
@@ -480,7 +548,10 @@ export function createExportBundleV2(rawStorage, extensionVersion = '1.1.0') {
   return {
     schemaVersion: 2,
     exportedAt: new Date().toISOString(),
-    extensionVersion,
+    // Read from the live manifest so it can never drift from manifest.json.
+    extensionVersion: (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest)
+      ? chrome.runtime.getManifest().version
+      : (extensionVersion || 'unknown'),
     metrics: {
       totalPlays,
       totalListeningSeconds
@@ -575,12 +646,16 @@ export async function importHistoryTracks(payload, extBrowser) {
     return { importedCount: 0, totalPlays: 0 };
   }
 
+  // Serialized against live play registration and duration ticks: a history import
+  // is a long read-modify-write over the same dictionaries, and without the lock it
+  // would discard whatever a tick wrote in the meantime.
+  return withStorageLock(async () => {
   const data = await extBrowser.storage.local.get(['totalPlays', 'totalListeningSeconds', 'songs', 'artists', 'albums']);
   let totalPlays = data.totalPlays || 0;
   let totalListeningSeconds = Math.max(0, Math.round(data.totalListeningSeconds || 0));
   const songs = data.songs || {};
   const artists = data.artists || {};
-  const albums = cleanAlbumsDict(data.albums || {}, extBrowser);
+  const albums = cleanAlbumsDict(data.albums || {});
 
   let newPlaysCount = 0;
 
@@ -703,4 +778,5 @@ export async function importHistoryTracks(payload, extBrowser) {
     singlesCount,
     historySyncState: payload.newSyncState || null
   };
+  });
 }

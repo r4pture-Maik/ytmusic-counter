@@ -5,8 +5,6 @@
  */
 
 import {
-  normalizeTrackTitle,
-  matchTrackPlayCount,
   calculateCompletePlays,
   cleanAlbumsDict
 } from './scoring.js';
@@ -23,7 +21,10 @@ import {
   invalidateStatsCache,
   createExportBundleV2,
   validateAndMigrateImport,
-  importHistoryTracks
+  importHistoryTracks,
+  withStorageLock,
+  isDangerousKey,
+  PENDING_DURATIONS_KEY
 } from './storage.js';
 
 import {
@@ -34,8 +35,7 @@ import {
 } from './thumbnails.js';
 
 import {
-  recordListeningDuration,
-  formatDuration
+  recordListeningDuration
 } from './duration.js';
 
 import {
@@ -54,7 +54,21 @@ import {
 // worlds share one implementation of the browse-response parsing.
 import '../shared/browse-parse.js';
 
-const { extractTrackTitlesFromBrowse, findBestThumbnail, buildBrowseRequestBody } = globalThis.YTMCShared;
+if (!globalThis.YTMCShared || typeof globalThis.YTMCShared.buildBrowseRequestBody !== 'function') {
+  // Without this the module would throw on the very first browse request, with a
+  // stack trace pointing at the destructuring rather than at the real cause.
+  throw new Error('[YTMusic Counter] shared/browse-parse.js failed to register globalThis.YTMCShared');
+}
+
+const {
+  extractTrackTitlesFromBrowse,
+  findBestThumbnail,
+  buildBrowseRequestBody,
+  getFallbackInnerTubeClient
+} = globalThis.YTMCShared;
+
+/** Single source of truth for the stale WEB_REMIX fallback context. */
+const FALLBACK_INNERTUBE_CLIENT = getFallbackInnerTubeClient();
 
 const extBrowser = typeof browser !== 'undefined' ? browser : chrome;
 
@@ -66,13 +80,72 @@ const extBrowser = typeof browser !== 'undefined' ? browser : chrome;
  * @param {string} message
  * @param {any} [data]
  */
-function debugLog(tag, message, data) {
+/** Buffered debug lines, flushed on an interval instead of one message per line. */
+let debugBuffer = [];
+let debugFlushTimer = null;
+
+const DEBUG_FLUSH_INTERVAL_MS = 400;
+const DEBUG_MAX_BUFFER = 100;
+
+function flushDebugLog() {
+  debugFlushTimer = null;
+  if (debugBuffer.length === 0) return;
+  const lines = debugBuffer;
+  debugBuffer = [];
+
   try {
-    const payload = { type: 'DEBUG_LOG', tag, message };
-    if (data !== undefined) payload.data = data;
-    const maybePromise = extBrowser.runtime.sendMessage(payload);
+    // One message per batch instead of one per line: an enrichment sweep used to
+    // emit hundreds of runtime messages, and the Details page re-rendered its
+    // entire <pre> for every one of them.
+    const maybePromise = extBrowser.runtime.sendMessage({ type: 'DEBUG_LOG_BATCH', lines });
     if (maybePromise && typeof maybePromise.catch === 'function') maybePromise.catch(() => {});
   } catch (_) {}
+}
+
+function debugLog(tag, message, data) {
+  try {
+    const line = { tag, message };
+    if (data !== undefined) line.data = data;
+    debugBuffer.push(line);
+    if (debugBuffer.length > DEBUG_MAX_BUFFER) debugBuffer.shift();
+    if (!debugFlushTimer) debugFlushTimer = setTimeout(flushDebugLog, DEBUG_FLUSH_INTERVAL_MS);
+  } catch (_) {}
+}
+
+/** Extension pages may drive these; no content script may. */
+const PRIVILEGED_MESSAGE_TYPES = new Set([
+  'RESET_STATS',
+  'IMPORT_DATA_V2',
+  'IMPORT_HISTORY_TRACKS',
+  'FETCH_MISSING_TRACKLISTS',
+  'SET_ENRICHMENT_CONFIG',
+  'CLEAR_THUMBNAIL_CACHE',
+  'START_HISTORY_SCAN',
+  'PING_CONTENT_SCRIPT'
+]);
+
+/** Upper bound on a single history-import payload. */
+const MAX_HISTORY_IMPORT_TRACKS = 5000;
+
+/**
+ * Validates that a message really came from this extension before acting on it.
+ *
+ * `runtime.onMessage` is reachable by every content script. A page cannot call it
+ * directly today, but the handlers behind it overwrite the entire database
+ * (RESET_STATS, IMPORT_DATA_V2, IMPORT_HISTORY_TRACKS), so the boundary is worth
+ * enforcing explicitly rather than relying on that accident.
+ *
+ * @param {any} message
+ * @param {object} sender
+ * @returns {boolean}
+ */
+function isTrustedMessage(message, sender) {
+  if (!message || typeof message.type !== 'string') return false;
+  if (!sender || sender.id !== extBrowser.runtime.id) return false;
+  if (!PRIVILEGED_MESSAGE_TYPES.has(message.type)) return true;
+
+  const extensionRoot = extBrowser.runtime.getURL('');
+  return typeof sender.url === 'string' && sender.url.startsWith(extensionRoot);
 }
 
 // Listen for storage changes to invalidate the stats cache
@@ -90,6 +163,8 @@ if (extBrowser.storage && extBrowser.storage.onChanged) {
 // Initialize default storage schema & heal corrupted entries upon service worker start
 initializeStorage(extBrowser).then(() => {
   autoHealMissingTracklists();
+  // A previous batch may have been interrupted by a worker restart.
+  resumeEnrichmentQueue();
 }).catch(() => {});
 
 /**
@@ -107,81 +182,38 @@ async function getEnrichmentConfig() {
   }
 }
 
-/**
- * Downloads a tracklist for every album that is still missing one.
- *
- * By default only albums that cleared the `uniqueTracksCount` threshold are
- * touched; pass `force` to sweep everything (used by the manual tool). Requests
- * go one at a time through the throttled queue, so the extension never bursts
- * the browse endpoint, and progress is mirrored into `scanProgress.statusText`
- * for the history-scanner UI.
- *
- * @param {object} [opts]
- * @param {boolean} [opts.force] Ignore the `uniqueTracksCount` threshold.
- * @param {string} [opts.progressPrefix] Prefix for the `scanProgress.statusText` line.
- * @returns {Promise<{total: number, updated: number, failed: number, skipped: number}>}
- */
-async function runAlbumEnrichment(opts) {
-  const options = opts || {};
-  const config = await getEnrichmentConfig();
-  const selectOptions = {
-    minUniqueTracks: config.minUniqueTracks,
-    force: Boolean(options.force)
-  };
+/** How often the enrichment pump mirrors progress into storage.local. */
+const ENRICHMENT_PROGRESS_WRITE_EVERY = 5;
 
-  const data = await extBrowser.storage.local.get(['albums', 'scanProgress']);
-  const candidates = selectAlbumsToEnrich(data.albums || {}, selectOptions);
-  const total = candidates.length;
-  const prefix = options.progressPrefix || 'Fetching metadata';
-
-  if (total === 0) return { total: 0, updated: 0, failed: 0, skipped: 0 };
-
-  debugLog('BG_ENRICH', `Queued ${total} albums for enrichment (threshold: ${config.minUniqueTracks} unique tracks${options.force ? ', forced' : ''}).`);
-
-  let scanProgress = data.scanProgress || {};
-  let updated = 0;
-  let failed = 0;
-  let skipped = 0;
-
-  for (let i = 0; i < candidates.length; i++) {
-    const [albumKey, album] = candidates[i];
-
-    scanProgress = { ...scanProgress, statusText: `${prefix} (${i + 1}/${total})...` };
-    await extBrowser.storage.local.set({ scanProgress }).catch(() => {});
-
-    const resolved = await ensureAlbumTracklist(albumKey, album.albumBrowseId);
-    if (resolved === true) {
-      updated++;
-    } else if (resolved === null) {
-      skipped++;
-    } else {
-      failed++;
-      debugLog('BG_ENRICH_ERR', `Could not resolve a tracklist for ${albumKey}.`);
-    }
-  }
-
-  scanProgress = { ...scanProgress, statusText: `${prefix} complete: ${updated}/${total} tracklists resolved.` };
-  await extBrowser.storage.local.set({ scanProgress }).catch(() => {});
-  debugLog('BG_ENRICH', `Enrichment finished: ${updated} updated, ${failed} unresolved, ${skipped} skipped, out of ${total}.`);
-
-  return { total, updated, failed, skipped };
-}
+/** Cap on albums touched by the startup heal, per service worker wake-up. */
+const AUTO_HEAL_BATCH_LIMIT = 20;
 
 async function autoHealMissingTracklists() {
   try {
     const config = await getEnrichmentConfig();
     const data = await extBrowser.storage.local.get(['albums']);
-    const candidates = selectAlbumsToEnrich(data.albums || {}, { minUniqueTracks: config.minUniqueTracks });
+    const selected = selectAlbumsToEnrich(data.albums || {}, { minUniqueTracks: config.minUniqueTracks });
+    const candidates = await filterRecentlyFailedAlbums(selected);
 
-    for (const [albKey, alb] of candidates) {
-      ensureAlbumTracklist(albKey, alb.albumBrowseId);
+    // Bounded per wake-up: the service worker restarts often, and an unbounded
+    // sweep on every restart is what turned transient failures into 429s.
+    const batch = candidates.slice(0, AUTO_HEAL_BATCH_LIMIT);
+    for (const [albKey, alb] of batch) {
+      ensureAlbumTracklist(albKey, alb.albumBrowseId).catch(() => {});
+    }
+
+    if (candidates.length > batch.length) {
+      debugLog('BG_ENRICH', `Auto-heal: ${batch.length}/${candidates.length} albums this wake-up, remainder deferred.`);
     }
   } catch (_) {}
 }
 
 // Chrome / WebExtensions runtime message dispatcher
 extBrowser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || !message.type) return;
+  if (!isTrustedMessage(message, sender)) {
+    sendResponse({ status: 'error', error: 'Untrusted message source.' });
+    return;
+  }
 
   switch (message.type) {
     case 'GET_SONG_COUNT': {
@@ -321,112 +353,157 @@ async function handleTrackPlayed(rawTrack) {
   const track = normalizeTrack(rawTrack);
   if (!track || !track.title) return { totalPlays: 0, songPlays: 0 };
 
-  const data = await extBrowser.storage.local.get(['totalPlays', 'totalListeningSeconds', 'songs', 'artists', 'albums']);
-  const totalPlays = (data.totalPlays || 0) + 1;
-  const songs = data.songs || {};
-  const artists = data.artists || {};
-  const albums = cleanAlbumsDict(data.albums || {}, extBrowser);
-
   const songKey = makeSongKey(track.title, track.artist);
-  const isSingle = Boolean(track.isSingle || !track.album || /^single(\s*-\s*ep)?$/i.test(track.album) || /^ep$/i.test(track.album));
-  const albumName = isSingle ? '' : (track.album || '');
 
-  // Update Song count
-  if (!songs[songKey]) {
-    songs[songKey] = {
+  // The read-modify-write is serialized against every other writer (duration
+  // ticks, history import, cover backfill). A 5s tick landing on top of a play
+  // registration used to make one of the two `set` calls discard the other.
+  const outcome = await withStorageLock(async () => {
+    let tracklistToFetch = null;
+
+    const data = await extBrowser.storage.local.get([
+      'totalPlays', 'totalListeningSeconds', 'songs', 'artists', 'albums', PENDING_DURATIONS_KEY
+    ]);
+    const totalPlays = (data.totalPlays || 0) + 1;
+    const songs = data.songs || {};
+    const artists = data.artists || {};
+    const albums = cleanAlbumsDict(data.albums || {});
+    const pendingDurations = data[PENDING_DURATIONS_KEY] || {};
+
+    // Drain any duration that accrued before this play was ever registered. Only
+    // the parked delta is applied: live ticks already added their own seconds
+    // directly, so adding track.durationSeconds here would double-count.
+    const durationDelta = Number(pendingDurations[songKey]) || 0;
+    if (durationDelta > 0) delete pendingDurations[songKey];
+
+    const isSingle = Boolean(track.isSingle || !track.album || /^single(\s*-\s*ep)?$/i.test(track.album) || /^ep$/i.test(track.album));
+    const albumName = isSingle ? '' : (track.album || '');
+
+    // Update Song count
+    if (!songs[songKey]) {
+      songs[songKey] = {
+        title: track.title,
+        artist: track.artist || 'Unknown Artist',
+        album: albumName,
+        isSingle: isSingle,
+        playCount: 1,
+        durationSeconds: durationDelta
+      };
+    } else {
+      songs[songKey].playCount = (songs[songKey].playCount || 0) + 1;
+      if (albumName && !songs[songKey].album) songs[songKey].album = albumName;
+      if (typeof track.isSingle !== 'undefined') songs[songKey].isSingle = isSingle;
+      if (durationDelta > 0) {
+        songs[songKey].durationSeconds = (songs[songKey].durationSeconds || 0) + durationDelta;
+      }
+    }
+
+    // Update Artist count (handles multiple artists separated by comma or feat)
+    if (track.artist) {
+      const artistList = track.artist.split(/[,&/]| feat\.? | ft\.? /i).map(a => a.trim()).filter(Boolean);
+      artistList.forEach(rawName => {
+        const aKey = makeArtistKey(rawName);
+        if (!artists[aKey]) {
+          artists[aKey] = { artist: rawName, playCount: 1, durationSeconds: durationDelta };
+        } else {
+          artists[aKey].playCount = (artists[aKey].playCount || 0) + 1;
+          if (durationDelta > 0) {
+            artists[aKey].durationSeconds = (artists[aKey].durationSeconds || 0) + durationDelta;
+          }
+        }
+      });
+    }
+
+    // Update Album count - ONLY for real albums (not singles)
+    if (albumName) {
+      const albumKey = makeAlbumKey(albumName, track.artist);
+      if (!albums[albumKey]) {
+        albums[albumKey] = {
+          album: albumName,
+          artist: track.artist || 'Unknown Artist',
+          albumBrowseId: track.albumBrowseId || '',
+          coverUrl: track.coverUrl || '',
+          tracksListened: {
+            [track.title]: 1
+          },
+          uniqueTracksCount: 1,
+          totalTracks: null,
+          playCount: 1,
+          durationSeconds: durationDelta,
+          completePlays: 0
+        };
+      } else {
+        albums[albumKey].playCount = (albums[albumKey].playCount || 0) + 1;
+        if (durationDelta > 0) {
+          albums[albumKey].durationSeconds = (albums[albumKey].durationSeconds || 0) + durationDelta;
+        }
+        if (!albums[albumKey].tracksListened) albums[albumKey].tracksListened = {};
+        albums[albumKey].tracksListened[track.title] = (albums[albumKey].tracksListened[track.title] || 0) + 1;
+        albums[albumKey].uniqueTracksCount = Object.keys(albums[albumKey].tracksListened).length;
+        if (track.albumBrowseId && !albums[albumKey].albumBrowseId) {
+          albums[albumKey].albumBrowseId = track.albumBrowseId;
+        }
+        if (track.coverUrl && !albums[albumKey].coverUrl) {
+          albums[albumKey].coverUrl = track.coverUrl;
+        }
+      }
+
+      if (!albums[albumKey].totalTracks && Array.isArray(albums[albumKey].allTracks) && albums[albumKey].allTracks.length > 0) {
+        albums[albumKey].totalTracks = albums[albumKey].allTracks.length;
+      }
+      if (albums[albumKey].totalTracks || albums[albumKey].allTracks) {
+        albums[albumKey].completePlays = calculateCompletePlays(albums[albumKey]);
+      }
+
+      if (shouldEnrichAlbum(albums[albumKey], { force: true })) {
+        tracklistToFetch = { albumKey, browseId: albums[albumKey].albumBrowseId };
+      }
+    }
+
+    const currentTrack = {
       title: track.title,
       artist: track.artist || 'Unknown Artist',
       album: albumName,
-      isSingle: isSingle,
-      playCount: 1,
-      durationSeconds: 0
+      isSingle,
+      songPlays: songs[songKey].playCount
     };
-  } else {
-    songs[songKey].playCount = (songs[songKey].playCount || 0) + 1;
-    if (albumName && !songs[songKey].album) songs[songKey].album = albumName;
-    if (typeof track.isSingle !== 'undefined') songs[songKey].isSingle = isSingle;
-  }
 
-  // Update Artist count (handles multiple artists separated by comma or feat)
-  if (track.artist) {
-    const artistList = track.artist.split(/[,&/]| feat\.? | ft\.? /i).map(a => a.trim()).filter(Boolean);
-    artistList.forEach(rawName => {
-      const aKey = makeArtistKey(rawName);
-      if (!artists[aKey]) {
-        artists[aKey] = { artist: rawName, playCount: 1, durationSeconds: 0 };
-      } else {
-        artists[aKey].playCount = (artists[aKey].playCount || 0) + 1;
-      }
-    });
-  }
+    const updates = {
+      totalPlays,
+      songs,
+      artists,
+      albums,
+      currentTrack
+    };
+    if (Object.keys(pendingDurations).length > 0) updates[PENDING_DURATIONS_KEY] = pendingDurations;
 
-  // Update Album count - ONLY for real albums (not singles)
-  if (albumName) {
-    const albumKey = makeAlbumKey(albumName, track.artist);
-    if (!albums[albumKey]) {
-      albums[albumKey] = {
-        album: albumName,
-        artist: track.artist || 'Unknown Artist',
-        albumBrowseId: track.albumBrowseId || '',
-        coverUrl: track.coverUrl || '',
-        tracksListened: {
-          [track.title]: 1
-        },
-        uniqueTracksCount: 1,
-        totalTracks: null,
-        playCount: 1,
-        durationSeconds: 0,
-        completePlays: 0
-      };
-    } else {
-      albums[albumKey].playCount = (albums[albumKey].playCount || 0) + 1;
-      if (!albums[albumKey].tracksListened) albums[albumKey].tracksListened = {};
-      albums[albumKey].tracksListened[track.title] = (albums[albumKey].tracksListened[track.title] || 0) + 1;
-      albums[albumKey].uniqueTracksCount = Object.keys(albums[albumKey].tracksListened).length;
-      if (track.albumBrowseId && !albums[albumKey].albumBrowseId) {
-        albums[albumKey].albumBrowseId = track.albumBrowseId;
-      }
-      if (track.coverUrl && !albums[albumKey].coverUrl) {
-        albums[albumKey].coverUrl = track.coverUrl;
-      }
-    }
+    await extBrowser.storage.local.set(updates);
 
-    // Level 2 (live tracking): the album being played right now always earns its
-    // tracklist, regardless of the batch threshold. The request still goes
-    // through the throttled queue, so it cannot stampede the browse endpoint.
-    if (shouldEnrichAlbum(albums[albumKey], { force: true })) {
-      ensureAlbumTracklist(albumKey, albums[albumKey].albumBrowseId);
-    }
-    if (!albums[albumKey].totalTracks && Array.isArray(albums[albumKey].allTracks) && albums[albumKey].allTracks.length > 0) {
-      albums[albumKey].totalTracks = albums[albumKey].allTracks.length;
-    }
-    if (albums[albumKey].totalTracks || albums[albumKey].allTracks) {
-      albums[albumKey].completePlays = calculateCompletePlays(albums[albumKey]);
-    }
-  }
-
-  const currentTrack = {
-    title: track.title,
-    artist: track.artist || 'Unknown Artist',
-    album: albumName,
-    isSingle,
-    songPlays: songs[songKey].playCount
-  };
-
-  await extBrowser.storage.local.set({
-    totalPlays,
-    songs,
-    artists,
-    albums,
-    currentTrack
+    return {
+      totalPlays,
+      songPlays: songs[songKey].playCount,
+      currentTrack,
+      // Level 2 (live tracking): the album being played right now always earns its
+      // tracklist, regardless of the batch threshold. Handed back to the caller
+      // instead of being fetched inline, because ensureAlbumTracklist acquires this
+      // same lock to persist its result and would deadlock.
+      tracklistToFetch
+    };
   });
 
   invalidateStatsCache();
 
+  // Fire-and-forget, outside the lock. The request still goes through the
+  // throttled queue, so it cannot stampede the browse endpoint.
+  if (outcome.tracklistToFetch) {
+    const { albumKey, browseId } = outcome.tracklistToFetch;
+    ensureAlbumTracklist(albumKey, browseId).catch(() => {});
+  }
+
   return {
-    totalPlays,
-    songPlays: songs[songKey].playCount,
-    currentTrack
+    totalPlays: outcome.totalPlays,
+    songPlays: outcome.songPlays,
+    currentTrack: outcome.currentTrack
   };
 }
 
@@ -457,25 +534,27 @@ async function handleImportDataV2(payload) {
   }
 
   const bundle = migration.bundle;
-  await extBrowser.storage.local.set({
-    totalPlays: bundle.totalPlays,
-    totalListeningSeconds: bundle.totalListeningSeconds,
-    songs: bundle.songs,
-    artists: bundle.artists,
-    albums: bundle.albums,
-    historySyncState: bundle.historySyncState
+  await withStorageLock(async () => {
+    await extBrowser.storage.local.set({
+      totalPlays: bundle.totalPlays,
+      totalListeningSeconds: bundle.totalListeningSeconds,
+      songs: bundle.songs,
+      artists: bundle.artists,
+      albums: bundle.albums,
+      historySyncState: bundle.historySyncState
+    });
   });
 
   invalidateStatsCache();
 
-  // Enrich tracklists for imported albums that have a browse ID but no allTracks.
-  // The threshold barrier inside runAlbumEnrichment keeps this from hammering
-  // YouTube Music with ~100 requests for albums that hold a single listened track.
-  try {
-    await runAlbumEnrichment({ progressPrefix: 'Fetching metadata for new albums' });
-  } catch (err) {
-    console.warn('[YTMusic Counter] Album enrichment after import failed:', err);
-  }
+  // Enrichment is queued, NOT awaited. Awaiting it kept this handler alive for the
+  // whole batch (hundreds of throttled requests, well past the 5-minute per-event
+  // ceiling in MV3), so the worker was terminated before sendResponse and the
+  // Details page hung on "Importing...". Progress is mirrored to scanProgress,
+  // which the Details page already listens to.
+  const queued = await enqueueAlbumEnrichment({
+    progressPrefix: 'Fetching metadata for new albums'
+  });
 
   return {
     success: true,
@@ -483,7 +562,8 @@ async function handleImportDataV2(payload) {
     totalListeningSeconds: bundle.totalListeningSeconds,
     songsCount: Object.keys(bundle.songs).length,
     artistsCount: Object.keys(bundle.artists).length,
-    albumsCount: Object.keys(bundle.albums).length
+    albumsCount: Object.keys(bundle.albums).length,
+    enrichment: queued
   };
 }
 
@@ -491,16 +571,19 @@ async function handleImportDataV2(payload) {
  * Imports an array of tracks extracted from the YouTube Music History page
  */
 async function handleImportHistory(payload) {
-  const result = await importHistoryTracks(payload, extBrowser);
-
-  // Trigger background enrichment for browse IDs if needed
-  try {
-    await runAlbumEnrichment({ progressPrefix: 'Fetching metadata' });
-  } catch (err) {
-    console.warn('[YTMusic Counter] Error enriching album tracklists after import:', err);
+  const tracks = (payload && payload.tracks) || [];
+  if (Array.isArray(tracks) && tracks.length > MAX_HISTORY_IMPORT_TRACKS) {
+    throw new Error(`Import payload too large: ${tracks.length} tracks (max ${MAX_HISTORY_IMPORT_TRACKS}).`);
   }
 
-  return result;
+  const result = await importHistoryTracks(payload, extBrowser);
+
+  // Queued rather than awaited, for the same reason as handleImportDataV2: a full
+  // enrichment batch outlives the MV3 per-event budget, and this handler must
+  // still be able to answer the content script's IMPORT_HISTORY_TRACKS callback.
+  const queued = await enqueueAlbumEnrichment({ progressPrefix: 'Fetching metadata' });
+
+  return { ...result, enrichment: queued };
 }
 
 /**
@@ -508,14 +591,21 @@ async function handleImportHistory(payload) {
  */
 async function handleGetAlbumDetails(payload) {
   if (!payload || !payload.album) return null;
-  const data = await extBrowser.storage.local.get(['albums']);
-  const albums = cleanAlbumsDict(data.albums || {}, extBrowser);
+
   const albumKey = makeAlbumKey(payload.album, payload.artist);
-  let album = albums[albumKey];
-  if (!album) {
-    const matchKey = Object.keys(albums).find(k => k.toLowerCase() === albumKey.toLowerCase());
-    if (matchKey) album = albums[matchKey];
-  }
+
+  const readAlbum = async () => {
+    const data = await extBrowser.storage.local.get(['albums']);
+    const albums = cleanAlbumsDict(data.albums || {});
+    let album = albums[albumKey];
+    if (!album) {
+      const matchKey = Object.keys(albums).find(k => k.toLowerCase() === albumKey.toLowerCase());
+      if (matchKey) album = albums[matchKey];
+    }
+    return { albums, album };
+  };
+
+  let { album } = await readAlbum();
   if (!album) return null;
 
   if (album.albumBrowseId && (!album.allTracks || album.allTracks.length === 0)) {
@@ -523,19 +613,29 @@ async function handleGetAlbumDetails(payload) {
       // Level 3 (on-demand): a single throttled request, delegated to the page origin.
       const fetched = await tracklistQueue.enqueue(() => fetchAlbumTrackCount(album.albumBrowseId));
       if (fetched && fetched.trackTitles && fetched.trackTitles.length > 0) {
-        album.totalTracks = fetched.totalTracks || fetched.trackTitles.length;
-        album.allTracks = fetched.trackTitles;
-        album.completePlays = calculateCompletePlays(album);
-        const actualKey = albums[albumKey] ? albumKey : Object.keys(albums).find(k => k.toLowerCase() === albumKey.toLowerCase());
-        if (actualKey) {
-          albums[actualKey] = album;
-          await extBrowser.storage.local.set({ albums });
-          invalidateStatsCache();
-        }
+        await withStorageLock(async () => {
+          const { albums, album: current } = await readAlbum();
+          if (!current) return;
+
+          current.totalTracks = fetched.totalTracks || fetched.trackTitles.length;
+          current.allTracks = fetched.trackTitles;
+          current.completePlays = calculateCompletePlays(current);
+          if (fetched.coverUrl && !current.coverUrl) {
+            current.coverUrl = fetched.coverUrl;
+          }
+
+          const actualKey = albums[albumKey]
+            ? albumKey
+            : Object.keys(albums).find(k => k.toLowerCase() === albumKey.toLowerCase());
+          if (actualKey) {
+            albums[actualKey] = current;
+            await extBrowser.storage.local.set({ albums });
+            album = current;
+          }
+        });
+        invalidateStatsCache();
       }
     } catch (_) {}
-  } else if (album.totalTracks && album.allTracks) {
-    album.completePlays = calculateCompletePlays(album);
   }
 
   return album;
@@ -738,19 +838,11 @@ async function resolveAlbumCover(album, artist, browseId) {
   // Tier 1: YouTube Music Browse endpoint (authoritative artwork for the album)
   if (browseId) {
     try {
-      const cleanId = browseId.startsWith('VL') ? browseId : (browseId.startsWith('OLAK5uy') ? `VL${browseId}` : browseId);
+      const cleanId = normalizeBrowseId(browseId);
       const res = await fetch('https://music.youtube.com/youtubei/v1/browse?prettyPrint=false', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          context: {
-            client: {
-              clientName: 'WEB_REMIX',
-              clientVersion: '1.20240101.01.00'
-            }
-          },
-          browseId: cleanId
-        })
+        body: JSON.stringify(buildBrowseRequestBody(cleanId))
       });
       if (res.ok) {
         const json = await res.json();
@@ -768,12 +860,7 @@ async function resolveAlbumCover(album, artist, browseId) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          context: {
-            client: {
-              clientName: 'WEB_REMIX',
-              clientVersion: '1.20240101.01.00'
-            }
-          },
+          context: { client: Object.assign({}, FALLBACK_INNERTUBE_CLIENT) },
           query: `${cleanAlb} ${cleanArt}`.trim()
         })
       });
@@ -796,12 +883,7 @@ async function resolveAlbumCover(album, artist, browseId) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          context: {
-            client: {
-              clientName: 'WEB_REMIX',
-              clientVersion: '1.20240101.01.00'
-            }
-          },
+          context: { client: Object.assign({}, FALLBACK_INNERTUBE_CLIENT) },
           query: cleanAlb
         })
       });
@@ -856,7 +938,7 @@ async function handleFetchAlbumCover(payload) {
   const albumKey = makeAlbumKey(albumName, artistName);
 
   const data = await extBrowser.storage.local.get(['albums']);
-  const albums = cleanAlbumsDict(data.albums || {}, extBrowser);
+  const albums = cleanAlbumsDict(data.albums || {});
 
   if (albums[albumKey] && albums[albumKey].coverUrl) {
     return { coverUrl: albums[albumKey].coverUrl };
@@ -866,26 +948,31 @@ async function handleFetchAlbumCover(payload) {
   const coverUrl = await enqueueCoverRequest(albumName, artistName, browseId);
 
   if (coverUrl) {
-    thumbnailCache.cacheRemoteThumbnail(albumKey, coverUrl).catch(() => {});
-    const freshData = await extBrowser.storage.local.get(['albums']);
-    const freshAlbums = cleanAlbumsDict(freshData.albums || {}, extBrowser);
-    if (!freshAlbums[albumKey]) {
-      freshAlbums[albumKey] = {
-        album: albumName,
-        artist: artistName,
-        albumBrowseId: browseId || '',
-        coverUrl: coverUrl,
-        tracksListened: {},
-        uniqueTracksCount: 0,
-        totalTracks: null,
-        playCount: 0,
-        durationSeconds: 0,
-        completePlays: 0
-      };
-    } else {
-      freshAlbums[albumKey].coverUrl = coverUrl;
-    }
-    await extBrowser.storage.local.set({ albums: freshAlbums });
+    // No thumbnail caching here on purpose: the object URL minted in the service
+    // worker can never be displayed by an extension page, and fetching the image
+    // twice (worker + page) doubled the download for every cover. The Details page
+    // downsizes and caches it itself via thumbnailCache.
+    await withStorageLock(async () => {
+      const freshData = await extBrowser.storage.local.get(['albums']);
+      const freshAlbums = cleanAlbumsDict(freshData.albums || {});
+      if (!freshAlbums[albumKey]) {
+        freshAlbums[albumKey] = {
+          album: albumName,
+          artist: artistName,
+          albumBrowseId: browseId || '',
+          coverUrl: coverUrl,
+          tracksListened: {},
+          uniqueTracksCount: 0,
+          totalTracks: null,
+          playCount: 0,
+          durationSeconds: 0,
+          completePlays: 0
+        };
+      } else {
+        freshAlbums[albumKey].coverUrl = coverUrl;
+      }
+      await extBrowser.storage.local.set({ albums: freshAlbums });
+    });
     invalidateStatsCache();
   }
 
@@ -897,30 +984,37 @@ async function handleBackfillAlbumCovers(payload) {
     return { updated: 0 };
   }
 
-  const data = await extBrowser.storage.local.get(['albums']);
-  const albums = cleanAlbumsDict(data.albums || {}, extBrowser);
-  let updated = 0;
+  const updated = await withStorageLock(async () => {
+    const data = await extBrowser.storage.local.get(['albums']);
+    const albums = cleanAlbumsDict(data.albums || {});
+    let changed = 0;
 
-  for (const item of payload.covers) {
-    if (!item.album || !item.coverUrl) continue;
-    const albumKey = makeAlbumKey(item.album, item.artist);
-    let target = albums[albumKey];
-    if (!target) {
-      const matchKey = Object.keys(albums).find(k => k.toLowerCase() === albumKey.toLowerCase());
-      if (matchKey) target = albums[matchKey];
-    }
-
-    if (target && !target.coverUrl) {
-      target.coverUrl = item.coverUrl;
-      if (item.albumBrowseId && !target.albumBrowseId) {
-        target.albumBrowseId = item.albumBrowseId;
+    for (const item of payload.covers) {
+      if (!item || isDangerousKey(makeAlbumKey(item.album, item.artist))) continue;
+      if (!item.album || !item.coverUrl) continue;
+      const albumKey = makeAlbumKey(item.album, item.artist);
+      let target = albums[albumKey];
+      if (!target) {
+        const matchKey = Object.keys(albums).find(k => k.toLowerCase() === albumKey.toLowerCase());
+        if (matchKey) target = albums[matchKey];
       }
-      updated++;
+
+      if (target && !target.coverUrl) {
+        target.coverUrl = item.coverUrl;
+        if (item.albumBrowseId && !target.albumBrowseId) {
+          target.albumBrowseId = item.albumBrowseId;
+        }
+        changed++;
+      }
     }
-  }
+
+    if (changed > 0) {
+      await extBrowser.storage.local.set({ albums });
+    }
+    return changed;
+  });
 
   if (updated > 0) {
-    await extBrowser.storage.local.set({ albums });
     invalidateStatsCache();
   }
 
@@ -929,14 +1023,19 @@ async function handleBackfillAlbumCovers(payload) {
 
 const pendingTracklistFetches = new Set();
 
-let albumsStorageMutex = Promise.resolve();
+/** Storage key holding per-album enrichment attempt bookkeeping. */
+const ENRICHMENT_ATTEMPTS_KEY = 'enrichmentAttempts';
+
+/** Do not retry an album that failed within this window (12h). */
+const ENRICHMENT_RETRY_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 
 /**
  * Downloads an album's official tracklist (if missing) and persists it.
  *
- * All writes go through `albumsStorageMutex`, a promise chain that serializes the
- * read-modify-write cycle on the `albums` dictionary. Without it, concurrent
- * fetches would each read the same snapshot and clobber each other's writes.
+ * The network fetch happens outside the storage lock; only the read-modify-write
+ * is serialized, via the same `withStorageLock` every other writer uses. The
+ * previous dedicated `albumsStorageMutex` only guarded this function, so a
+ * concurrent play registration or duration tick could still clobber the write.
  *
  * @param {string} albumKey
  * @param {string} browseId
@@ -953,50 +1052,42 @@ async function ensureAlbumTracklist(albumKey, browseId) {
   try {
     const fetched = await tracklistQueue.enqueue(() => fetchAlbumTrackCount(browseId));
     if (!fetched || !fetched.trackTitles || fetched.trackTitles.length === 0) {
+      await recordEnrichmentAttempt(albumKey, false);
       return false;
     }
 
-    return await new Promise((resolve) => {
-      albumsStorageMutex = albumsStorageMutex.then(async () => {
-        try {
-          const data = await extBrowser.storage.local.get(['albums']);
-          const albums = cleanAlbumsDict(data.albums || {}, extBrowser);
-          const targetKey = albums[albumKey]
-            ? albumKey
-            : Object.keys(albums).find((k) => k.toLowerCase() === albumKey.toLowerCase());
+    return await withStorageLock(async () => {
+      try {
+        const data = await extBrowser.storage.local.get(['albums']);
+        const albums = cleanAlbumsDict(data.albums || {});
+        const targetKey = albums[albumKey]
+          ? albumKey
+          : Object.keys(albums).find((k) => k.toLowerCase() === albumKey.toLowerCase());
 
-          if (!targetKey || !albums[targetKey]) {
-            console.warn('[YTMusic Counter] Could not find album in database during lock:', albumKey);
-            resolve(false);
-            return;
-          }
-
-          let changed = false;
-          albums[targetKey].totalTracks = fetched.totalTracks || fetched.trackTitles.length;
-          albums[targetKey].allTracks = fetched.trackTitles;
-          albums[targetKey].completePlays = calculateCompletePlays(albums[targetKey]);
-          changed = true;
-
-          if (fetched.coverUrl && !albums[targetKey].coverUrl) {
-            albums[targetKey].coverUrl = fetched.coverUrl;
-          }
-
-          if (changed) {
-            await extBrowser.storage.local.set({ albums });
-            invalidateStatsCache();
-          }
-          resolve(true);
-        } catch (err) {
-          console.error('[YTMusic Counter] Error persisting tracklist for', albumKey, err);
-          resolve(false);
+        if (!targetKey || !albums[targetKey]) {
+          console.warn('[YTMusic Counter] Could not find album in database during lock:', albumKey);
+          return false;
         }
-      }).catch((err) => {
-        console.error('[YTMusic Counter] Mutex chain error for', albumKey, err);
-        resolve(false);
-      });
+
+        albums[targetKey].totalTracks = fetched.totalTracks || fetched.trackTitles.length;
+        albums[targetKey].allTracks = fetched.trackTitles;
+        albums[targetKey].completePlays = calculateCompletePlays(albums[targetKey]);
+
+        if (fetched.coverUrl && !albums[targetKey].coverUrl) {
+          albums[targetKey].coverUrl = fetched.coverUrl;
+        }
+
+        await extBrowser.storage.local.set({ albums });
+        invalidateStatsCache();
+        return true;
+      } catch (err) {
+        console.error('[YTMusic Counter] Error persisting tracklist for', albumKey, err);
+        return false;
+      }
     });
   } catch (err) {
     console.warn('[YTMusic Counter] Error ensuring album tracklist for', albumKey, err);
+    await recordEnrichmentAttempt(albumKey, false);
     return false;
   } finally {
     pendingTracklistFetches.delete(albumKey);
@@ -1004,17 +1095,222 @@ async function ensureAlbumTracklist(albumKey, browseId) {
 }
 
 /**
+ * Records an enrichment attempt so failures are not retried forever.
+ *
+ * `pendingTracklistFetches` only dedupes *concurrent* calls and lives in memory,
+ * so a service worker restart used to re-request every unresolved album. Combined
+ * with the queue's internal retry x3 and exponential backoff, that is the
+ * fastest way to earn a 429 or a CAPTCHA from the browse endpoint.
+ *
+ * @param {string} albumKey
+ * @param {boolean} succeeded
+ */
+async function recordEnrichmentAttempt(albumKey, succeeded) {
+  if (!albumKey) return;
+  try {
+    const data = await extBrowser.storage.local.get([ENRICHMENT_ATTEMPTS_KEY]);
+    const attempts = data[ENRICHMENT_ATTEMPTS_KEY] || {};
+    if (succeeded) {
+      delete attempts[albumKey];
+    } else {
+      attempts[albumKey] = Date.now();
+    }
+    await extBrowser.storage.local.set({ [ENRICHMENT_ATTEMPTS_KEY]: attempts });
+  } catch (_) {
+    // Bookkeeping is best-effort; never fail a fetch over it.
+  }
+}
+
+/**
+ * Filters out albums whose last attempt failed inside the cooldown window.
+ *
+ * @param {Array<[string, object]>} candidates
+ * @returns {Promise<Array<[string, object]>>}
+ */
+async function filterRecentlyFailedAlbums(candidates) {
+  if (candidates.length === 0) return candidates;
+  try {
+    const data = await extBrowser.storage.local.get([ENRICHMENT_ATTEMPTS_KEY]);
+    const attempts = data[ENRICHMENT_ATTEMPTS_KEY] || {};
+    const cutoff = Date.now() - ENRICHMENT_RETRY_COOLDOWN_MS;
+    return candidates.filter(([albumKey]) => {
+      const lastAttempt = Number(attempts[albumKey]) || 0;
+      return lastAttempt < cutoff;
+    });
+  } catch (_) {
+    return candidates;
+  }
+}
+
+/** Storage key for the resumable enrichment queue. */
+const ENRICHMENT_QUEUE_KEY = 'enrichmentQueue';
+
+/** Albums processed per pump before yielding back to the event loop. */
+const ENRICHMENT_BATCH_SIZE = 5;
+
+/** Delay between two pump cycles. */
+const ENRICHMENT_PUMP_INTERVAL_MS = 1500;
+
+let enrichmentPumpTimer = null;
+
+/**
+ * Persists a resumable enrichment job and starts pumping it.
+ *
+ * The previous design awaited the whole batch inside the message handler. That is
+ * incompatible with MV3: a single event may not keep the service worker alive for
+ * more than ~5 minutes, and a full sweep is hundreds of throttled requests. The
+ * worker was killed mid-batch, `sendResponse` never fired, and the Details page's
+ * "Fetch Missing Tracklists" button stayed disabled forever.
+ *
+ * Now the candidate list plus a cursor live in storage, the UI is answered
+ * immediately, and the pump advances in small slices. If the worker dies anyway,
+ * `resumeEnrichmentQueue()` picks the job back up on the next start.
+ *
+ * @param {object} [options]
+ * @param {boolean} [options.force] Ignore the unique-tracks threshold.
+ * @param {string} [options.progressPrefix]
+ * @returns {Promise<{queued: boolean, total: number, reason?: string}>}
+ */
+async function enqueueAlbumEnrichment(options) {
+  const opts = options || {};
+  const config = await getEnrichmentConfig();
+  const data = await extBrowser.storage.local.get(['albums', 'scanProgress']);
+  const selected = selectAlbumsToEnrich(data.albums || {}, {
+    minUniqueTracks: config.minUniqueTracks,
+    force: Boolean(opts.force)
+  });
+  // Skip albums that already failed inside the cooldown window, otherwise a
+  // re-run (or a worker restart mid-job) re-requests every known-bad browse ID.
+  const candidates = await filterRecentlyFailedAlbums(selected);
+
+  if (candidates.length === 0) {
+    return {
+      queued: false,
+      total: 0,
+      deferred: selected.length,
+      reason: selected.length > 0 ? 'all-recently-failed' : 'no-albums-to-enrich'
+    };
+  }
+
+  const job = {
+    candidates,
+    index: 0,
+    updated: 0,
+    failed: 0,
+    skipped: selected.length - candidates.length,
+    force: Boolean(opts.force),
+    progressPrefix: opts.progressPrefix || 'Fetching metadata',
+    baseScanProgress: data.scanProgress || {},
+    startedAt: Date.now()
+  };
+
+  await extBrowser.storage.local.set({ [ENRICHMENT_QUEUE_KEY]: job });
+  scheduleEnrichmentPump(0);
+
+  debugLog('BG_ENRICH', `Enrichment queued: ${candidates.length} albums (resumable${job.skipped ? `, ${job.skipped} deferred after recent failure` : ''}).`);
+  return { queued: true, total: candidates.length, deferred: job.skipped };
+}
+
+/**
+ * Resumes a persisted enrichment job. Safe to call on every worker start.
+ *
+ * @returns {Promise<void>}
+ */
+async function resumeEnrichmentQueue() {
+  try {
+    const data = await extBrowser.storage.local.get([ENRICHMENT_QUEUE_KEY]);
+    const job = data[ENRICHMENT_QUEUE_KEY];
+    if (!job || !Array.isArray(job.candidates) || job.candidates.length === 0) return;
+    if (job.index >= job.candidates.length) {
+      await extBrowser.storage.local.remove(ENRICHMENT_QUEUE_KEY);
+      return;
+    }
+    debugLog('BG_ENRICH', `Resuming enrichment at ${job.index}/${job.candidates.length}.`);
+    scheduleEnrichmentPump(0);
+  } catch (_) {}
+}
+
+function scheduleEnrichmentPump(delayMs) {
+  if (enrichmentPumpTimer) clearTimeout(enrichmentPumpTimer);
+  enrichmentPumpTimer = setTimeout(() => {
+    enrichmentPumpTimer = null;
+    pumpEnrichmentQueue().catch(() => {});
+  }, delayMs || ENRICHMENT_PUMP_INTERVAL_MS);
+}
+
+/**
+ * Advances the persisted enrichment job by one small batch.
+ *
+ * @returns {Promise<void>}
+ */
+async function pumpEnrichmentQueue() {
+  let job;
+  try {
+    const data = await extBrowser.storage.local.get([ENRICHMENT_QUEUE_KEY]);
+    job = data[ENRICHMENT_QUEUE_KEY];
+  } catch (_) {
+    return;
+  }
+
+  if (!job || !Array.isArray(job.candidates)) return;
+
+  const end = Math.min(job.index + ENRICHMENT_BATCH_SIZE, job.candidates.length);
+  const prefix = job.progressPrefix || 'Fetching metadata';
+
+  for (; job.index < end; job.index++) {
+    const [albumKey, album] = job.candidates[job.index];
+
+    // Progress is throttled: writing it for every album meant hundreds of
+    // storage.set calls, and each one fired storage.onChanged on the Details page.
+    if (job.index % ENRICHMENT_PROGRESS_WRITE_EVERY === 0) {
+      job.baseScanProgress = {
+        ...(job.baseScanProgress || {}),
+        statusText: `${prefix} (${job.index + 1}/${job.candidates.length})...`
+      };
+      await extBrowser.storage.local.set({ scanProgress: job.baseScanProgress }).catch(() => {});
+    }
+
+    const resolved = await ensureAlbumTracklist(albumKey, album.albumBrowseId);
+    if (resolved === true) {
+      job.updated++;
+    } else if (resolved === null) {
+      job.skipped++;
+    } else {
+      job.failed++;
+      debugLog('BG_ENRICH_ERR', `Could not resolve a tracklist for ${albumKey}.`);
+    }
+  }
+
+  if (job.index >= job.candidates.length) {
+    job.baseScanProgress = {
+      ...(job.baseScanProgress || {}),
+      statusText: `${prefix} complete: ${job.updated}/${job.candidates.length} tracklists resolved.`
+    };
+    await extBrowser.storage.local.set({ scanProgress: job.baseScanProgress }).catch(() => {});
+    await extBrowser.storage.local.remove(ENRICHMENT_QUEUE_KEY);
+    debugLog('BG_ENRICH', `Enrichment finished: ${job.updated} updated, ${job.failed} unresolved, ${job.skipped} skipped, of ${job.candidates.length}.`);
+    return;
+  }
+
+  await extBrowser.storage.local.set({ [ENRICHMENT_QUEUE_KEY]: job }).catch(() => {});
+  scheduleEnrichmentPump(ENRICHMENT_PUMP_INTERVAL_MS);
+}
+
+/**
  * Handles the manual "Fetch Missing Tracklists" tool from the Details page.
  * Bypasses the listening-threshold barrier so every album that still lacks a
  * tracklist gets resolved, but keeps the serial throttled pacing.
  *
+ * Answers immediately with the queue depth; the sweep itself runs in the
+ * background and reports through `scanProgress`.
+ *
  * @param {object} [payload]
  * @param {boolean} [payload.force] Defaults to true; set false to honour the threshold.
- * @returns {Promise<{total: number, updated: number, failed: number, skipped: number}>}
+ * @returns {Promise<{queued: boolean, total: number, reason?: string}>}
  */
 async function handleFetchMissingTracklists(payload) {
   const force = !payload || payload.force !== false;
-  return runAlbumEnrichment({ force, progressPrefix: 'Fetching missing tracklists' });
+  return enqueueAlbumEnrichment({ force, progressPrefix: 'Fetching missing tracklists' });
 }
 
 /**

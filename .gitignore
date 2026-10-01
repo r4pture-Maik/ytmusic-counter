@@ -32,5 +32,12 @@ tmp/
 temp/
 scratch/
 
+# Release artifacts (npm run build)
+dist/
+
 # Local documentation & wiki
-.*
+# Listed explicitly rather than as a blanket `.*`, which would also swallow
+# .github/ and make it impossible to add a CI workflow.
+.agents/
+.review/
+.wiki/

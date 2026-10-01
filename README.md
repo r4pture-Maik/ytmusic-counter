@@ -76,12 +76,16 @@ about:debugging#/runtime/this-firefox
 
 ## 🔒 Privacy & Data Collection
 
-**YTMusic Counter is 100% privacy-friendly:**
-- **Zero data collection**: No telemetry, analytics, or personal identifiers.
-- **Zero remote transmission**: No outbound network requests to external servers.
-- **100% on-device storage**: All counts are kept exclusively inside your browser's local sandbox storage (`browser.storage.local`).
+**YTMusic Counter is privacy-friendly by architecture:**
 
-Read the complete [Privacy Policy](PRIVACY.md) for full details and permission explanations.
+- **No telemetry, no analytics, no tracking**: nothing is measured, logged, fingerprinted, or sent anywhere.
+- **No data leaves your browser**: there is no server, no account, no backend. The only network requests go to `music.youtube.com` (to read your listening history and look up album tracklists) and to Google's own image CDNs (to download cover art) — the same hosts YouTube Music already contacts while you use it.
+- **100% on-device storage**: all counts live in `storage.local` plus a local IndexedDB cover-art cache. Uninstalling erases everything.
+- **Open source and auditable**: no build step, no obfuscation, no vendored binaries. The code you review is the code that runs.
+- **History import is opt-in**: the only feature that reads anything about your activity runs when you ask it to, and is documented in full in the [Privacy Policy](PRIVACY.md).
+
+Read the complete [Privacy Policy](PRIVACY.md) for network request details, permission
+explanations, and the Chrome Web Store Limited Use affirmation.
 
 ---
 
@@ -90,6 +94,33 @@ Read the complete [Privacy Policy](PRIVACY.md) for full details and permission e
 YouTube and YouTube Music are registered trademarks of Google LLC. 
 
 **YTMusic Counter** is an independent, open-source project and is not affiliated with, endorsed by, sponsored by, or connected to Google LLC, YouTube, or Alphabet Inc.
+
+---
+
+## 📦 Building for Release
+
+There is no bundler and no transpiler. `tools/build.mjs` copies the served files and
+drops the manifest keys each browser does not implement, producing two uploadable
+archives in `dist/`:
+
+```bash
+npm run build           # both targets
+npm run build:chrome    # -> dist/chrome-1.1.0.zip
+npm run build:firefox   # -> dist/firefox-1.1.0.zip
+```
+
+Nothing is minified or concatenated, so the uploaded code is byte-identical to the
+source above and both stores accept it without a separate source-code submission.
+`dist/` is gitignored.
+
+The single `manifest.json` is the source of truth for both. It carries both
+`background.service_worker` (Chrome) and `background.scripts` (Firefox) because the two
+browsers implement MV3 background contexts differently, and the build strips whichever
+one the target does not want.
+
+> `minimum_chrome_version` must stay at **121 or above** while `background.scripts` is
+> present in the source manifest: Chrome 120 and earlier refuse to load the extension
+> outright. The build fails loudly if that invariant is ever broken.
 
 ---
 

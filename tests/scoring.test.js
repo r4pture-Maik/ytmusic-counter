@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   normalizeTrackTitle,
   matchTrackPlayCount,
+  createMatchIndex,
+  matchTrackPlayCountWithIndex,
   calculateCompletePlays,
   cleanAlbumsDict
 } from '../background/scoring.js';
@@ -74,6 +76,48 @@ describe('Scoring Engine - matchTrackPlayCount', () => {
     assert.equal(matchTrackPlayCount('We Will Rock You', listenedDict), 0);
     assert.equal(matchTrackPlayCount('', listenedDict), 0);
     assert.equal(matchTrackPlayCount('Song', null), 0);
+  });
+
+  test('index-backed lookup agrees with the direct lookup', () => {
+    // createMatchIndex is the performance path used by calculateCompletePlays and
+    // the Details page; it must be behaviourally identical to matchTrackPlayCount.
+    const index = createMatchIndex(listenedDict);
+
+    assert.equal(matchTrackPlayCountWithIndex('Bohemian Rhapsody', index), 5);
+    assert.equal(matchTrackPlayCountWithIndex('BOHEMIAN RHAPSODY', index), 5);
+    assert.equal(matchTrackPlayCountWithIndex('Under Pressure - 2011 Remaster', index), 3);
+    assert.equal(matchTrackPlayCountWithIndex('Run', index), 0);
+    assert.equal(matchTrackPlayCountWithIndex('We Will Rock You', index), 0);
+    assert.equal(matchTrackPlayCountWithIndex('', index), 0);
+  });
+
+  test('index handles a null or empty listened dictionary', () => {
+    const emptyIndex = createMatchIndex(null);
+    assert.equal(matchTrackPlayCountWithIndex('Anything', emptyIndex), 0);
+    assert.equal(matchTrackPlayCountWithIndex('Anything', undefined), 0);
+  });
+
+  test('exact lowercased match wins over the normalized tier', () => {
+    const dupes = createMatchIndex({
+      'Song (Remastered)': 3,
+      'Song': 7
+    });
+    // Both keys normalize to "song", but the case-insensitive tier is checked first,
+    // so the literally-titled entry wins. This mirrors matchTrackPlayCount's
+    // documented order (exact -> case-insensitive -> normalized).
+    assert.equal(matchTrackPlayCountWithIndex('Song', dupes), 7);
+    assert.equal(matchTrackPlayCountWithIndex('Other Song', dupes), 0);
+  });
+
+  test('normalized tier is used when no literal key matches', () => {
+    const dupes = createMatchIndex({
+      'Song (Remastered)': 3,
+      'Song': 7
+    });
+    // "Song - 2011 Remaster" normalizes to "song" but matches no key literally, so
+    // only the normalized tier can resolve it. With two colliding keys the first
+    // one indexed wins.
+    assert.equal(matchTrackPlayCountWithIndex('Song - 2011 Remaster', dupes), 3);
   });
 });
 

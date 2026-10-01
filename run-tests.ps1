@@ -26,7 +26,18 @@ if (-not $nodeCmd) {
 }
 
 Write-Host "Using Node binary: $nodeBin" -ForegroundColor Gray
-& $nodeBin --test tests/*.test.js
+
+# Expand the glob here rather than passing "tests/*.test.js" through: PowerShell
+# does not glob arguments for native commands, so Node only received a literal
+# pattern and this silently relied on Node >= 21 doing the expansion itself.
+$testFiles = Get-ChildItem -Path "tests" -Filter "*.test.js" | Select-Object -ExpandProperty FullName
+
+if (-not $testFiles) {
+    Write-Error "No test files found in tests/*.test.js"
+    exit 1
+}
+
+& $nodeBin --test @testFiles
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "All tests passed successfully!" -ForegroundColor Green
