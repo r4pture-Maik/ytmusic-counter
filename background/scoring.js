@@ -43,35 +43,62 @@ export function normalizeTrackTitle(str) {
  * @param {Record<string, number>} listened
  * @returns {number} Play count of matched track, or 0
  */
+/**
+ * Builds a reusable lookup index over a `tracksListened` dictionary.
+ *
+ * `matchTrackPlayCount` re-ran `normalizeTrackTitle` (a chain of ~8 regexes) on
+ * every key for every lookup, so completing one album of 20 tracks against a
+ * 20-entry dictionary cost 400 regex evaluations. `calculateCompletePlays` pays
+ * that once per track of every album on each call, and it is called from
+ * getStats, from the sanitizer and from every play registration.
+ *
+ * Build the index once per album and reuse it for all of that album's lookups.
+ *
+ * @param {Record<string, number>} listened
+ * @returns {{byLower: Map<string, number>, byNormalized: Map<string, number>}}
+ */
+export function createMatchIndex(listened) {
+  const byLower = new Map();
+  const byNormalized = new Map();
+
+  if (!listened || typeof listened !== 'object') return { byLower, byNormalized };
+
+  for (const [key, count] of Object.entries(listened)) {
+    if (typeof count !== 'number') continue;
+    const lower = key.trim().toLowerCase();
+    if (!byLower.has(lower)) byLower.set(lower, count);
+    const normalized = normalizeTrackTitle(key);
+    if (normalized && !byNormalized.has(normalized)) byNormalized.set(normalized, count);
+  }
+
+  return { byLower, byNormalized };
+}
+
+/**
+ * Index-backed variant of `matchTrackPlayCount`. Same three-tier strategy, but
+ * the expensive normalization is precomputed by `createMatchIndex`.
+ *
+ * @param {string} trackTitle
+ * @param {{byLower: Map<string, number>, byNormalized: Map<string, number>}} index
+ * @returns {number}
+ */
+export function matchTrackPlayCountWithIndex(trackTitle, index) {
+  if (!trackTitle || !index) return 0;
+
+  const targetLower = trackTitle.trim().toLowerCase();
+  const lowerHit = index.byLower.get(targetLower);
+  if (lowerHit !== undefined) return lowerHit;
+
+  const normTarget = normalizeTrackTitle(trackTitle);
+  if (!normTarget) return 0;
+
+  const normHit = index.byNormalized.get(normTarget);
+  return normHit !== undefined ? normHit : 0;
+}
+
 export function matchTrackPlayCount(trackTitle, listened) {
   if (!trackTitle || !listened) return 0;
-  
-  // 1. Direct exact match
-  if (typeof listened[trackTitle] === 'number') {
-    return listened[trackTitle];
-  }
-
-  const listenedEntries = Object.entries(listened);
-
-  // 2. Direct case-insensitive match
-  const targetLower = trackTitle.trim().toLowerCase();
-  for (const [key, count] of listenedEntries) {
-    if (key.trim().toLowerCase() === targetLower) {
-      return count;
-    }
-  }
-
-  // 3. Normalized title match
-  const normTarget = normalizeTrackTitle(trackTitle);
-  if (normTarget) {
-    for (const [key, count] of listenedEntries) {
-      if (normalizeTrackTitle(key) === normTarget) {
-        return count;
-      }
-    }
-  }
-
-  return 0;
+  return matchTrackPlayCountWithIndex(trackTitle, createMatchIndex(listened));
 }
 
 /**
@@ -87,8 +114,15 @@ export function calculateCompletePlays(album) {
     return 0;
   }
 
-  const playCounts = album.allTracks.map(t => matchTrackPlayCount(t, album.tracksListened || {}));
-  const minPlays = Math.min(...playCounts);
+  // One index for the whole album instead of one full re-scan of tracksListened
+  // (and one re-normalization of every key) per track.
+  const index = createMatchIndex(album.tracksListened);
+  let minPlays = Infinity;
+  for (const title of album.allTracks) {
+    const count = matchTrackPlayCountWithIndex(title, index);
+    if (count < minPlays) minPlays = count;
+  }
+
   return minPlays > 0 ? minPlays : 0;
 }
 
@@ -96,16 +130,22 @@ export function calculateCompletePlays(album) {
  * Cleans the stored albums dictionary:
  * - Drops singles and false album names
  * - Recomputes completePlays via calculateCompletePlays for self-healing
- * - Asynchronously updates browser storage if any repairs occurred
+ *
+ * This function is deliberately PURE. It used to write `albums` back to storage
+ * as a side effect, which was unsafe from three directions: it ran on read paths
+ * (including getStats), it was not serialized against concurrent writers, and the
+ * `cleaned` object it persisted silently *dropped* entries. A read racing a
+ * play-registration `set` could therefore delete albums outright, and every write
+ * fired storage.onChanged, which bounced back into getStats.
+ *
+ * Persisting a repair is now the caller's responsibility, under the storage lock.
  *
  * @param {Record<string, any>} albums
- * @param {object} [extBrowser]
  * @returns {Record<string, any>}
  */
-export function cleanAlbumsDict(albums, extBrowser = null) {
+export function cleanAlbumsDict(albums) {
   if (!albums || typeof albums !== 'object') return {};
   const cleaned = {};
-  let anyUpdated = false;
 
   for (const [key, val] of Object.entries(albums)) {
     if (!val || !val.album) continue;
@@ -116,23 +156,11 @@ export function cleanAlbumsDict(albums, extBrowser = null) {
 
     // Sync totalTracks if allTracks is present
     if (Array.isArray(val.allTracks) && val.allTracks.length > 0) {
-      if (val.totalTracks !== val.allTracks.length) {
-        val.totalTracks = val.allTracks.length;
-        anyUpdated = true;
-      }
+      val.totalTracks = val.allTracks.length;
     }
 
-    const recomputed = calculateCompletePlays(val);
-    if (recomputed !== val.completePlays) {
-      val.completePlays = recomputed;
-      anyUpdated = true;
-    }
+    val.completePlays = calculateCompletePlays(val);
     cleaned[key] = val;
-  }
-
-  // If any completePlays were corrected, save to storage asynchronously if browser available
-  if (anyUpdated && extBrowser && extBrowser.storage && extBrowser.storage.local) {
-    extBrowser.storage.local.set({ albums: cleaned }).catch(() => {});
   }
 
   return cleaned;

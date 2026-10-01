@@ -20,6 +20,18 @@
   'use strict';
 
   /**
+   * Last-resort InnerTube client. Deliberately stale: it only exists for the case
+   * where no live page context could be obtained (service worker fallback, or a
+   * MAIN-world bridge that did not answer), and YouTube rejects newer browse ID
+   * namespaces such as `MPREb_` with this version. Single source of truth: the
+   * service worker used to carry its own hardcoded copy.
+   */
+  const FALLBACK_INNERTUBE_CLIENT = {
+    clientName: 'WEB_REMIX',
+    clientVersion: '1.20240101.01.00'
+  };
+
+  /**
    * Recursively extracts track titles from YouTube Music browse results.
    *
    * @param {any} node
@@ -127,18 +139,22 @@
    *   access and falls back to the hardcoded WEB_REMIX context.
    * @returns {object}
    */
+  /**
+   * Returns a copy of the stale WEB_REMIX fallback client, so callers outside this
+   * file (the service worker's search requests) stop hardcoding their own.
+   *
+   * @returns {{clientName: string, clientVersion: string}}
+   */
+  function getFallbackInnerTubeClient() {
+    return { clientName: FALLBACK_INNERTUBE_CLIENT.clientName, clientVersion: FALLBACK_INNERTUBE_CLIENT.clientVersion };
+  }
+
   function buildBrowseRequestBody(cleanBrowseId, context) {
     return {
       context:
         context && typeof context === 'object'
           ? context
-          : {
-              client: {
-                clientName: 'WEB_REMIX',
-                // Kept only as a last resort; stale by design. Prefer a live context.
-                clientVersion: '1.20240101.01.00'
-              }
-            },
+          : { client: Object.assign({}, FALLBACK_INNERTUBE_CLIENT) },
       browseId: cleanBrowseId
     };
   }
@@ -146,8 +162,15 @@
   /**
    * Reads the page's live InnerTube context from `ytcfg`.
    *
-   * Only usable from the content script: `ytcfg` is a page-world expando, which
-   * a content script can read in Firefox but a service worker cannot reach.
+   * Synchronous path, only usable from a world that can see the page expando:
+   *   - Firefox content scripts: yes (Xray vision exposes page expandos).
+   *   - Chrome content scripts: NO. The isolated world has its own global object,
+   *     so `window.ytcfg` is `undefined` and this returns null.
+   *   - Service worker: never (no page at all).
+   *
+   * On Chrome use `requestPageInnerTubeContext()` instead, which goes through the
+   * MAIN-world bridge in shared/page-context.js.
+   *
    * The context is deep-cloned to strip Xray wrappers and non-cloneable values
    * before it is structured-cloned across the message boundary.
    *
@@ -181,10 +204,100 @@
     }
   }
 
+  const PAGE_CONTEXT_REQUEST_SOURCE = 'ytmc:request-innerTube-context';
+  const PAGE_CONTEXT_RESPONSE_SOURCE = 'ytmc:innerTube-context';
+  const PAGE_CONTEXT_TIMEOUT_MS = 500;
+  const PAGE_CONTEXT_TTL_MS = 60000;
+
+  let pageContextCache = null;
+  let pageContextCachedAt = 0;
+  let pageContextInFlight = null;
+
+  /**
+   * Asks the MAIN-world bridge (shared/page-context.js) for the live InnerTube
+   * context, and caches the answer briefly.
+   *
+   * This is the only path that works in Chrome, where the content script's
+   * isolated world cannot read `ytcfg` directly. On Firefox the synchronous
+   * `getPageInnerTubeContext()` already succeeds and this is never called.
+   *
+   * Resolves to null (never rejects) when no bridge is present, so callers can
+   * always fall back to the stale WEB_REMIX context.
+   *
+   * @param {object} [options]
+   * @param {number} [options.timeoutMs]
+   * @param {number} [options.ttlMs]
+   * @returns {Promise<object|null>}
+   */
+  function requestPageInnerTubeContext(options) {
+    const opts = options || {};
+    const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : PAGE_CONTEXT_TIMEOUT_MS;
+    const ttlMs = Number.isFinite(opts.ttlMs) ? opts.ttlMs : PAGE_CONTEXT_TTL_MS;
+
+    if (typeof window === 'undefined' || !window.addEventListener) {
+      return Promise.resolve(null);
+    }
+    if (pageContextCache && Date.now() - pageContextCachedAt < ttlMs) {
+      return Promise.resolve(pageContextCache);
+    }
+    if (pageContextInFlight) return pageContextInFlight;
+
+    pageContextInFlight = new Promise((resolve) => {
+      let settled = false;
+
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        window.removeEventListener('message', onMessage);
+        pageContextInFlight = null;
+        if (value) {
+          pageContextCache = value;
+          pageContextCachedAt = Date.now();
+        }
+        resolve(value || null);
+      };
+
+      function onMessage(event) {
+        if (event.source !== window) return;
+        const data = event.data;
+        if (!data || data.source !== PAGE_CONTEXT_RESPONSE_SOURCE) return;
+        finish(data.context || null);
+      }
+
+      const timer = setTimeout(() => finish(null), timeoutMs);
+      window.addEventListener('message', onMessage);
+
+      try {
+        window.postMessage({ source: PAGE_CONTEXT_REQUEST_SOURCE }, window.location.origin);
+      } catch (_) {
+        finish(null);
+      }
+    });
+
+    return pageContextInFlight;
+  }
+
+  /**
+   * Resolves the live page context, preferring the synchronous `ytcfg` read and
+   * falling back to the MAIN-world bridge. Safe to call from a content script.
+   *
+   * @param {object} [scope]
+   * @returns {Promise<object|null>}
+   */
+  async function resolvePageInnerTubeContext(scope) {
+    const direct = getPageInnerTubeContext(scope);
+    if (direct) return direct;
+    return requestPageInnerTubeContext();
+  }
+
   root.YTMCShared = Object.assign(root.YTMCShared || {}, {
     extractTrackTitlesFromBrowse,
     findBestThumbnail,
     buildBrowseRequestBody,
-    getPageInnerTubeContext
+    getPageInnerTubeContext,
+    requestPageInnerTubeContext,
+    resolvePageInnerTubeContext,
+    getFallbackInnerTubeClient
   });
 })(typeof globalThis !== 'undefined' ? globalThis : self);

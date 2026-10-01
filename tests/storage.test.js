@@ -5,7 +5,10 @@ import {
   makeArtistKey,
   makeAlbumKey,
   normalizeTrack,
-  sanitizeStorageData
+  sanitizeStorageData,
+  createExportBundleV2,
+  isDangerousKey,
+  PENDING_DURATIONS_KEY
 } from '../background/storage.js';
 
 describe('Storage Module - Key Helpers', () => {
@@ -91,5 +94,72 @@ describe('Storage Module - sanitizeStorageData', () => {
     assert.equal(sanitized.artists['daft punk'].playCount, 4);
     assert.equal(sanitized.artists['pharrell williams'].playCount, 4);
     assert.equal(sanitized.artists['daft punk'].durationSeconds, 960);
+  });
+
+  test('drops prototype-polluting keys from an untrusted import', () => {
+    // An imported backup is attacker-controllable input. A "__proto__" key reaching
+    // `songs[key] = value` mutates the object's prototype instead of storing a
+    // record, so the sanitizer must reject it.
+    const rawData = {
+      songs: JSON.parse('{"__proto__": {"title": "Evil", "artist": "X"}, "ok:::x": {"title": "Ok", "artist": "X", "playCount": 2}}'),
+      albums: {}
+    };
+
+    const sanitized = sanitizeStorageData(rawData);
+    assert.ok(sanitized.modified);
+    assert.equal(Object.prototype.hasOwnProperty.call(sanitized.songs, '__proto__'), false);
+    assert.ok(sanitized.songs['ok:::x']);
+    assert.equal({}.title, undefined);
+  });
+
+  test('isDangerousKey rejects prototype chain keys only', () => {
+    assert.equal(isDangerousKey('__proto__'), true);
+    assert.equal(isDangerousKey('constructor'), true);
+    assert.equal(isDangerousKey('prototype'), true);
+    assert.equal(isDangerousKey('normal:::key'), false);
+  });
+
+  test('tolerates a missing or null storage payload', () => {
+    assert.doesNotThrow(() => sanitizeStorageData(undefined));
+    assert.doesNotThrow(() => sanitizeStorageData(null));
+    assert.doesNotThrow(() => createExportBundleV2(undefined));
+    assert.doesNotThrow(() => createExportBundleV2(null));
+  });
+});
+
+describe('Storage Module - createExportBundleV2', () => {
+  test('produces a schema v2 bundle from stored state', () => {
+    const bundle = createExportBundleV2({
+      totalPlays: 42,
+      totalListeningSeconds: 3600,
+      songs: { 'ok:::x': { title: 'Ok', artist: 'X', playCount: 2, durationSeconds: 300 } },
+      artists: { x: { artist: 'X', playCount: 2, durationSeconds: 300 } },
+      albums: { 'alb:::x': { album: 'Alb', artist: 'X', playCount: 2, completePlays: 1, totalTracks: 2, uniqueTracksCount: 2 } },
+      historySyncState: { lastTrackTitle: 'Ok', lastTrackArtist: 'X', lastSyncTimestamp: 123 }
+    });
+
+    assert.equal(bundle.schemaVersion, 2);
+    assert.equal(bundle.metrics.totalPlays, 42);
+    assert.equal(bundle.metrics.totalListeningSeconds, 3600);
+    assert.ok(bundle.songs['ok:::x']);
+    assert.equal(bundle.syncWatermark.lastTrackTitle, 'Ok');
+  });
+
+  test('carries the album tracklist so a backup restores without re-fetching', () => {
+    const bundle = createExportBundleV2({
+      totalPlays: 1,
+      songs: {},
+      artists: {},
+      albums: { 'alb:::x': { album: 'Alb', artist: 'X', allTracks: ['A', 'B'], tracksListened: { A: 1, B: 1 } } }
+    });
+
+    assert.deepEqual(bundle.albums['alb:::x'].allTracks, ['A', 'B']);
+    assert.equal(bundle.albums['alb:::x'].totalTracks, 2);
+  });
+});
+
+describe('Storage Module - pendingDurations key', () => {
+  test('is namespaced so it cannot collide with the counters', () => {
+    assert.equal(PENDING_DURATIONS_KEY, 'pendingDurations');
   });
 });

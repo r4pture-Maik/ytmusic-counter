@@ -14,8 +14,26 @@ const NEGATIVE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 let dbPromise = null;
 const memoryUrlMap = new Map(); // albumKey -> objectUrl
-const failedKeySet = new Set(); // albumKey -> boolean
+const failedKeyMap = new Map(); // albumKey -> timestamp of the last failure
 const pendingFetches = new Map(); // albumKey -> Promise
+
+/**
+ * Negative-cache lookups must expire, otherwise a single transient network
+ * failure permanently hides an album's cover for the rest of the session.
+ *
+ * @param {string} albumKey
+ * @returns {boolean}
+ */
+function isNegativeCached(albumKey) {
+  if (!albumKey) return false;
+  const failedAt = failedKeyMap.get(albumKey);
+  if (failedAt === undefined) return false;
+  if (Date.now() - failedAt >= NEGATIVE_CACHE_TTL_MS) {
+    failedKeyMap.delete(albumKey);
+    return false;
+  }
+  return true;
+}
 
 /**
  * Opens or upgrades the IndexedDB database.
@@ -101,34 +119,60 @@ export async function putRecord(record) {
  * Resizes an image Blob into 128x128 WebP blob using OffscreenCanvas or HTML Canvas
  */
 export async function downscaleImageBlob(sourceBlob) {
-  const globalObj = typeof window !== 'undefined' ? window : (typeof self !== 'undefined' ? self : globalThis);
-  if (typeof createImageBitmap === 'function') {
-    const imgBitmap = await createImageBitmap(sourceBlob);
-    let canvas;
-    if (typeof OffscreenCanvas !== 'undefined') {
-      canvas = new OffscreenCanvas(TARGET_SIZE, TARGET_SIZE);
-    } else if (typeof document !== 'undefined') {
-      canvas = document.createElement('canvas');
-      canvas.width = TARGET_SIZE;
-      canvas.height = TARGET_SIZE;
-    } else {
-      return sourceBlob;
-    }
+  if (typeof createImageBitmap !== 'function') return sourceBlob;
 
+  let imgBitmap;
+  try {
+    imgBitmap = await createImageBitmap(sourceBlob);
+  } catch (_) {
+    return sourceBlob;
+  }
+
+  let canvas;
+  if (typeof OffscreenCanvas !== 'undefined') {
+    canvas = new OffscreenCanvas(TARGET_SIZE, TARGET_SIZE);
+  } else if (typeof document !== 'undefined') {
+    canvas = document.createElement('canvas');
+    canvas.width = TARGET_SIZE;
+    canvas.height = TARGET_SIZE;
+  } else {
+    if (typeof imgBitmap.close === 'function') imgBitmap.close();
+    return sourceBlob;
+  }
+
+  try {
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(imgBitmap, 0, 0, TARGET_SIZE, TARGET_SIZE);
-    imgBitmap.close();
+    if (!ctx) return sourceBlob;
 
-    if (canvas.convertToBlob) {
-      return canvas.convertToBlob({ type: 'image/webp', quality: WEBP_QUALITY });
-    } else if (canvas.toBlob) {
-      return new Promise((resolve) => {
+    // Centre-crop to a square before downscaling. The previous 5-argument
+    // drawImage() stretched non-square covers into 128x128, distorting them.
+    const sourceW = imgBitmap.width || TARGET_SIZE;
+    const sourceH = imgBitmap.height || TARGET_SIZE;
+    const side = Math.min(sourceW, sourceH);
+    const sx = Math.floor((sourceW - side) / 2);
+    const sy = Math.floor((sourceH - side) / 2);
+
+    ctx.drawImage(
+      imgBitmap,
+      sx, sy, side, side,
+      0, 0, TARGET_SIZE, TARGET_SIZE
+    );
+
+    if (typeof canvas.convertToBlob === 'function') {
+      return await canvas.convertToBlob({ type: 'image/webp', quality: WEBP_QUALITY });
+    }
+    if (typeof canvas.toBlob === 'function') {
+      return await new Promise((resolve) => {
         canvas.toBlob((b) => resolve(b || sourceBlob), 'image/webp', WEBP_QUALITY);
       });
     }
     return sourceBlob;
+  } catch (err) {
+    console.warn('[ThumbnailCache] Downscale failed, storing original blob:', err);
+    return sourceBlob;
+  } finally {
+    if (typeof imgBitmap.close === 'function') imgBitmap.close();
   }
-  return sourceBlob;
 }
 
 /**
@@ -169,7 +213,7 @@ export async function cacheRemoteThumbnail(albumKey, remoteUrl) {
       return null;
     } catch (err) {
       console.warn('[ThumbnailCache] Remote fetch failed for', albumKey, err);
-      failedKeySet.add(albumKey);
+      failedKeyMap.set(albumKey, Date.now());
       return null;
     } finally {
       pendingFetches.delete(albumKey);
@@ -195,7 +239,7 @@ export async function getThumbnailObjectUrl(albumKey) {
   if (memoryUrlMap.has(albumKey)) {
     return memoryUrlMap.get(albumKey);
   }
-  if (failedKeySet.has(albumKey)) {
+  if (isNegativeCached(albumKey)) {
     return null;
   }
 
@@ -214,16 +258,16 @@ export async function getThumbnailObjectUrl(albumKey) {
 
 export async function markThumbnailFailed(albumKey) {
   if (!albumKey) return;
-  failedKeySet.add(albumKey);
+  failedKeyMap.set(albumKey, Date.now());
 }
 
 export function isThumbnailFailed(albumKey) {
-  return failedKeySet.has(albumKey);
+  return isNegativeCached(albumKey);
 }
 
 export async function clearThumbnailCache() {
   revokeAllObjectUrls();
-  failedKeySet.clear();
+  failedKeyMap.clear();
   pendingFetches.clear();
 
   try {
@@ -301,10 +345,5 @@ export const thumbnailCache = {
   getThumbnailStats,
   revokeAllObjectUrls
 };
-
-// Global fallback for content pages and details.html
-if (typeof globalThis !== 'undefined') {
-  globalThis.thumbnailCache = thumbnailCache;
-}
 
 export default thumbnailCache;

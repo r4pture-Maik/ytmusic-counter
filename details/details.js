@@ -4,7 +4,8 @@
  * and a 3-step confirmation flow for erasing all extension data.
  */
 
-import { normalizeTrackTitle, matchTrackPlayCount } from '../background/scoring.js';
+import { createMatchIndex, matchTrackPlayCountWithIndex } from '../background/scoring.js';
+import { makeAlbumKey } from '../background/storage.js';
 import { thumbnailCache } from '../background/thumbnails.js';
 
 const extBrowser = typeof browser !== 'undefined' ? browser : chrome;
@@ -249,9 +250,9 @@ function computeAlbumStatusText(album, uniqueTracks, completePlays) {
   if (effectivePlays > 0) {
     let nextProgress = 0;
     if (album.allTracks && album.totalTracks) {
+      const matchIndex = createMatchIndex(album.tracksListened);
       for (const t of album.allTracks) {
-        const c = matchTrackPlayCount(t, album.tracksListened || {});
-        if (c > effectivePlays) nextProgress++;
+        if (matchTrackPlayCountWithIndex(t, matchIndex) > effectivePlays) nextProgress++;
       }
     }
     if (nextProgress > 0 && album.totalTracks) {
@@ -342,6 +343,10 @@ function renderTrackChips(tracksContainer, currentAlbum) {
   const listenedObj = currentAlbum.tracksListened || {};
   const hasAllTracks = Array.isArray(currentAlbum.allTracks) && currentAlbum.allTracks.length > 0;
 
+  // One index for the whole album rather than a full re-scan of tracksListened
+  // (and a re-normalization of every key) per rendered chip.
+  const matchIndex = createMatchIndex(listenedObj);
+
   tracksContainer.innerHTML = '';
 
   const header = tracksContainer.parentElement ? tracksContainer.parentElement.querySelector('.album-tracks-header') : null;
@@ -356,7 +361,7 @@ function renderTrackChips(tracksContainer, currentAlbum) {
 
   if (hasAllTracks) {
     currentAlbum.allTracks.forEach(title => {
-      const count = matchTrackPlayCount(title, listenedObj);
+      const count = matchTrackPlayCountWithIndex(title, matchIndex);
       const chip = document.createElement('span');
       if (count > 0) {
         chip.className = 'track-chip listened';
@@ -385,15 +390,15 @@ function renderTrackChips(tracksContainer, currentAlbum) {
   }
 }
 
-function wireAlbumCardEvents(card, album, cardId, idx) {
+function wireAlbumCardEvents(card, album, cardId) {
   const toggleBtn = card.querySelector('.btn-toggle-album-tracks');
   const expandedSection = card.querySelector(`#${cardId}`);
   const tracksContainer = card.querySelector(`#${cardId}-tracks`);
   if (!toggleBtn || !expandedSection || !tracksContainer) return;
 
-  // Pre-render immediately so tracks are never blank
-  renderTrackChips(tracksContainer, card._albumData || album);
-
+  // Chips are rendered on first expand, not up front. With "Show All" on a large
+  // library this used to build ~2250 DOM nodes (plus one regex-heavy match per
+  // track) for cards the user may never open.
   toggleBtn.addEventListener('click', async () => {
     const currentAlbum = card._albumData || album;
     const isActive = expandedSection.classList.toggle('active');
@@ -460,23 +465,12 @@ function buildAlbumCard(album, idx) {
   const cardId = `album-card-${idx}`;
   const artId = `album-art-${idx}`;
 
-  // Check if thumbnail Object URL is already available in memory
-  const memoryCoverUrl = thumbnailCache.getMemoryObjectUrl(albumKey);
-  const initialCoverUrl = memoryCoverUrl || (album.coverUrl && !album.coverUrl.startsWith('http') ? album.coverUrl : null);
+  const badgeHtml = `${isCompleted ? '★' : '💿'}`;
+  const starHtml = isCompleted ? '<span class="album-cover-star" title="Completed Album">★</span>' : '';
 
-  const artworkHtml = initialCoverUrl
-    ? `<div class="album-artwork-container" id="${artId}">
-        <img class="album-cover-img" src="${escapeHtml(initialCoverUrl)}" alt="${escapeHtml(album.album)}" onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='flex';" />
-        <div class="album-icon-badge ${isCompleted ? 'completed' : ''}" style="display: none;">
-          ${isCompleted ? '★' : '💿'}
-        </div>
-        ${isCompleted ? '<span class="album-cover-star" title="Completed Album">★</span>' : ''}
-      </div>`
-    : `<div class="album-artwork-container" id="${artId}">
-        <div class="album-icon-badge ${isCompleted ? 'completed' : ''}">
-          ${isCompleted ? '★' : '💿'}
-        </div>
-        ${isCompleted ? '<span class="album-cover-star" title="Completed Album">★</span>' : ''}
+  const artworkHtml = `<div class="album-artwork-container" id="${artId}">
+        <div class="album-icon-badge ${isCompleted ? 'completed' : ''}">${badgeHtml}</div>
+        ${starHtml}
       </div>`;
 
   card.innerHTML = `
@@ -504,12 +498,13 @@ function buildAlbumCard(album, idx) {
     </div>
   `;
 
-  wireAlbumCardEvents(card, album, cardId, idx);
+  wireAlbumCardEvents(card, album, cardId);
 
-  // Lazy-load cover from IndexedDB / remote only if not already rendered
-  if (!initialCoverUrl) {
-    observeAlbumCard(card, album, idx);
-  }
+  // Covers are always resolved through fetchAlbumCover, which prefers the
+  // IndexedDB object URL and only falls back to the remote https:// URL. The
+  // previous code injected an <img> straight from the remote URL whenever
+  // `initialCoverUrl` was set, which bypassed the whole 128px WebP cache.
+  observeAlbumCard(card, idx);
 
   return card;
 }
@@ -590,19 +585,14 @@ function getAlbumCoverObserver() {
   return albumCoverObserver;
 }
 
-function observeAlbumCard(card, album, idx) {
+function observeAlbumCard(card, idx) {
   card.dataset.index = idx;
-  card._albumData = album;
   const observer = getAlbumCoverObserver();
   if (observer) {
     observer.observe(card);
   } else {
-    fetchAlbumCover(album, idx, card);
+    fetchAlbumCover(card._albumData, idx, card);
   }
-}
-
-function makeAlbumKey(album, artist) {
-  return `${(album || '').trim().toLowerCase()}:::${(artist || '').trim().toLowerCase()}`;
 }
 
 function applyCoverToCard(container, url, albumName) {
@@ -666,17 +656,19 @@ async function fetchAlbumCover(album, idx, cardEl) {
     container.classList.add('loading');
   }
 
-  // Step 2: If album already has remote coverUrl, downscale and cache into IndexedDB
+  // Step 2: If album already has a remote coverUrl, downscale and cache into IndexedDB
   if (album.coverUrl && album.coverUrl.startsWith('http')) {
+    let cachedUrl = null;
     try {
-      const cached = await thumbnailCache.cacheRemoteThumbnail(key, album.coverUrl);
-      if (cached && cached.objectUrl) {
-        applyCoverToCard(container, cached.objectUrl, album.album);
-        refreshThumbnailCacheStats();
-        return;
-      }
+      // cacheRemoteThumbnail resolves to the object URL string itself (or null).
+      // The previous check read `cached.objectUrl`, which is always undefined, so
+      // the 128px WebP was cached and then thrown away in favour of a second
+      // download of the full-size original.
+      cachedUrl = await thumbnailCache.cacheRemoteThumbnail(key, album.coverUrl);
     } catch (_) {}
-    applyCoverToCard(container, album.coverUrl, album.album);
+
+    applyCoverToCard(container, cachedUrl || album.coverUrl, album.album);
+    if (cachedUrl) refreshThumbnailCacheStats();
     return;
   }
 
@@ -706,9 +698,9 @@ async function fetchAlbumCover(album, idx, cardEl) {
     album.coverUrl = resolvedUrl;
     let displayUrl = resolvedUrl;
     try {
-      const cached = await thumbnailCache.cacheRemoteThumbnail(key, resolvedUrl);
-      if (cached && cached.objectUrl) {
-        displayUrl = cached.objectUrl;
+      const cachedUrl = await thumbnailCache.cacheRemoteThumbnail(key, resolvedUrl);
+      if (cachedUrl) {
+        displayUrl = cachedUrl;
         refreshThumbnailCacheStats();
       }
     } catch (_) {}
@@ -945,6 +937,8 @@ function renderScanProgress(scanProgress) {
         const t = scanProgress.latestTrack;
         elements.scannerImportingTrack.textContent = `🎵 "${t.title}" • ${t.artist || 'Unknown'}${t.album ? ` (${t.album})` : ''}`;
       } else {
+        // Enrichment reuses scanProgress.statusText, so surface it here too
+        // instead of showing a stale "Finding songs in history...".
         elements.scannerImportingTrack.textContent = cleanStatus || 'Finding songs in history...';
       }
     }
@@ -1141,14 +1135,22 @@ function setupDataBackupWorkflow() {
             showImportExportMessage('Export failed: ' + (extBrowser.runtime.lastError?.message || response?.error), true);
             return;
           }
-          const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(response.data, null, 2));
+          // Blob + object URL instead of a data: URL. A data: URL caps out at a
+          // couple of MB (and encodeURIComponent nearly doubles the size), so a
+          // real library export simply failed to download.
+          const json = JSON.stringify(response.data, null, 2);
+          const blob = new Blob([json], { type: 'application/json' });
+          const objectUrl = URL.createObjectURL(blob);
           const dateStr = new Date().toISOString().split('T')[0];
           const downloadAnchor = document.createElement('a');
-          downloadAnchor.setAttribute('href', dataStr);
-          downloadAnchor.setAttribute('download', `ytmusic-counter-export-${dateStr}.json`);
+          downloadAnchor.href = objectUrl;
+          downloadAnchor.download = `ytmusic-counter-export-${dateStr}.json`;
           document.body.appendChild(downloadAnchor);
           downloadAnchor.click();
           downloadAnchor.remove();
+          // Revoked on the next tick: revoking synchronously can cancel the
+          // download in some builds.
+          setTimeout(() => URL.revokeObjectURL(objectUrl), 10000);
           showImportExportMessage('Library exported successfully!');
         });
       } catch (err) {
@@ -1212,6 +1214,11 @@ document.addEventListener('DOMContentLoaded', () => {
 /* ==========================================================================
    DEBUGGING & DIAGNOSTICS MODULE (Hidden Behind Debug Options Toggle)
    ========================================================================== */
+/** Longest debug console content kept in the DOM. */
+const DEBUG_CONSOLE_MAX_CHARS = 4000;
+
+let debugRenderScheduled = false;
+
 function debugLog(tag, message, data) {
   const now = new Date().toTimeString().split(' ')[0];
   let text = `[${now}] [${tag}] ${message}`;
@@ -1219,8 +1226,25 @@ function debugLog(tag, message, data) {
     text += '\n' + (typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data));
   }
   console.log(`[YTMC Debug] [${tag}]`, message, data !== undefined ? data : '');
-  if (elements.debugConsole) {
-    elements.debugConsole.textContent = text + '\n' + elements.debugConsole.textContent.slice(0, 4000);
+
+  if (!elements.debugConsole) return;
+
+  // Reassigning textContent re-parses the whole <pre>; during an enrichment sweep
+  // that happens hundreds of times. Coalesce to one paint per frame.
+  if (debugRenderScheduled) return;
+  debugRenderScheduled = true;
+
+  const render = () => {
+    debugRenderScheduled = false;
+    if (!elements.debugConsole) return;
+    const existing = elements.debugConsole.textContent || '';
+    elements.debugConsole.textContent = (text + '\n' + existing).slice(0, DEBUG_CONSOLE_MAX_CHARS);
+  };
+
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(render);
+  } else {
+    setTimeout(render, 0);
   }
 }
 
@@ -1315,7 +1339,18 @@ function setupDebugSection() {
 
   // Listen for remote logs
   extBrowser.runtime.onMessage.addListener((message) => {
-    if (message && message.type === 'DEBUG_LOG') {
+    if (!message) return;
+
+    // Batched form: the background flushes its debug buffer on an interval rather
+    // than sending one runtime message per line.
+    if (message.type === 'DEBUG_LOG_BATCH' && Array.isArray(message.lines)) {
+      message.lines.forEach(line => {
+        if (line) debugLog(line.tag || 'REMOTE', line.message, line.data);
+      });
+      return;
+    }
+
+    if (message.type === 'DEBUG_LOG') {
       debugLog(message.tag || 'REMOTE', message.message, message.data);
     }
   });
@@ -1355,26 +1390,41 @@ function setupEnrichmentControls() {
       const btn = elements.fetchMissingTracklistsBtn;
       btn.disabled = true;
       const originalLabel = btn.textContent;
-      btn.textContent = 'Fetching...';
+      btn.textContent = 'Queued...';
       debugLog('ENRICH', 'Manual tracklist backfill requested. Open a music.youtube.com tab for best results.');
+
+      // The background answers immediately and runs the sweep as a resumable job.
+      // Waiting for a final result used to hang forever once the service worker was
+      // terminated mid-batch, leaving the button disabled with no feedback. Live
+      // progress now arrives through scanProgress instead.
+      const restoreButton = () => {
+        btn.disabled = false;
+        btn.textContent = originalLabel;
+      };
 
       try {
         const response = await extBrowser.runtime.sendMessage({ type: 'FETCH_MISSING_TRACKLISTS', payload: { force: true } });
         if (response && response.status === 'ok') {
           const r = response.data;
-          debugLog('ENRICH', `Backfill finished: ${r.updated}/${r.total} tracklists resolved, ${r.failed} unresolved.`);
-          if (elements.enrichmentStatusTag) {
-            elements.enrichmentStatusTag.textContent = `Tracklists: ${r.updated}/${r.total} resolved`;
+          if (r && r.queued) {
+            debugLog('ENRICH', `Backfill queued: ${r.total} tracklists to resolve. Live progress in the scanner panel.`);
+            if (elements.enrichmentStatusTag) {
+              elements.enrichmentStatusTag.textContent = `Tracklists: ${r.total} queued`;
+            }
+            restoreButton();
+          } else {
+            debugLog('ENRICH', 'Backfill: nothing to fetch, every tracked album already has a tracklist.');
+            if (elements.enrichmentStatusTag) elements.enrichmentStatusTag.textContent = 'Tracklists: all resolved';
+            restoreButton();
+            loadStats();
           }
-          loadStats();
         } else {
           debugLog('ENRICH_ERROR', 'Backfill failed:', (response && response.error) || 'unknown error');
+          restoreButton();
         }
       } catch (err) {
         debugLog('ENRICH_ERROR', 'Backfill failed:', err.message || err);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = originalLabel;
+        restoreButton();
       }
     });
   }
